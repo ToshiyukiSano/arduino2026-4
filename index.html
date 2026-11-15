@@ -13,7 +13,7 @@
     （Bluetooth の通信そのものは、PC と Arduino の間で直接行う）
   ・AI の判定は、この PC の中で行う。Teachable Machine のクラス名で、Arduino へ送る1文字を決める
     （dai4_ai_remote と同じ UUID・同じ文字）：
-      点灯 → O、消灯 → F、右 → R、中央 → C、左 → L、待機 → 何も送らない
+      点灯 → O、消灯 → F、右 → R、上 → C（サーボを中央へ）、左 → L、待機 → 何も送らない
   ・クラス名はこのとおり（漢字）に入力する。違う名前のクラスは「送らない」になる（画面の欄で選び直せる）。
   ・Bluetooth の設定画面でのペアリングは不要。「Bluetoothで接続」を押し、
     Chrome が出す一覧から、自分の機器（NGS-01〜NGS-11）を選ぶ。
@@ -90,7 +90,7 @@
     </div>
     <div>
       <div style="font-size:16px;color:var(--sub)">認識結果とスコア（長いほど、そのクラスに近いと判定。必ず正しい確率ではありません）</div>
-      <div id="classes"><p class="note">モデルを読み込むと、ここにクラスが出ます。クラス名（点灯・消灯・右・中央・左・待機）で、送る文字が決まります。</p></div>
+      <div id="classes"><p class="note">モデルを読み込むと、ここにクラスが出ます。クラス名（点灯・消灯・右・上・左・待機）で、送る文字が決まります。</p></div>
       <div class="settings">
         <label>送る条件：スコア
           <select id="threshold"><option value="0.6">0.6 以上</option><option value="0.7">0.7 以上</option><option value="0.8" selected>0.8 以上</option><option value="0.9">0.9 以上</option></select></label>
@@ -120,7 +120,7 @@
       <button data-cmd="O" disabled>点灯</button>
       <button data-cmd="F" disabled>消灯</button>
       <button data-cmd="R" disabled>右</button>
-      <button data-cmd="C" disabled>中央</button>
+      <button data-cmd="C" disabled>上</button>
       <button data-cmd="L" disabled>左</button>
     </span>
   </div>
@@ -144,11 +144,11 @@ const NAME_PREFIX  = 'NGS-';
 const SERVICE_UUID = '2fb61ef3-3619-447d-8e6c-58a330ada446';
 const COMMAND_UUID = 'a757a3b8-787c-44bb-a768-95c597baf42b';
 const STATUS_UUID  = '67fc9eee-e535-4917-99f6-222dc95351ce';
-const CMD_NAME = { O: '点灯', F: '消灯', R: '右', C: '中央', L: '左' };
+const CMD_NAME = { O: '点灯', F: '消灯', R: '右', C: '上（中央へ）', L: '左' };
 const CMD_COLOR = { O: 'var(--a)', F: '#7b8794', R: '#8e44ad', C: 'var(--c)', L: 'var(--b)', '': '#c4cad3' };
 // クラス名 → 送る文字（待機は送らない）
-const NAME_TO_CMD = { '点灯': 'O', '消灯': 'F', '右': 'R', '中央': 'C', '左': 'L', '待機': '' };
-const OPTIONS = [['', '送らない'], ['O', 'O（点灯）'], ['F', 'F（消灯）'], ['R', 'R（右）'], ['C', 'C（中央）'], ['L', 'L（左）']];
+const NAME_TO_CMD = { '点灯': 'O', '消灯': 'F', '右': 'R', '上': 'C', '左': 'L', '待機': '' };
+const OPTIONS = [['', '送らない'], ['O', 'O（点灯）'], ['F', 'F（消灯）'], ['R', 'R（右）'], ['C', 'C（上：中央へ）'], ['L', 'L（左）']];
 
 const $ = (id) => document.getElementById(id);
 let device = null, commandChar = null, statusChar = null, connecting = false;

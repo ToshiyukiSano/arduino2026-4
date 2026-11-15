@@ -17,9 +17,10 @@
 //     クラス「点灯」→ O：LED を点灯（サーボはそのまま）
 //     クラス「消灯」→ F：LED を消灯（サーボはそのまま）
 //     クラス「右」　→ R：サーボを右へ（LED はそのまま）
-//     クラス「中央」→ C：サーボを中央へ（LED はそのまま）
+//     クラス「上」　→ C：サーボを中央へ戻す（LED はそのまま）
 //     クラス「左」　→ L：サーボを左へ（LED はそのまま）
 //     クラス「待機」→ 何も送らない（LED もサーボも、直前の状態のまま）
+//   クラス名「上」は、この作品では「サーボを中央へ戻す」操作に割り当てたポーズです。
 //   届いた指示は、LED マトリクスに記号で表示する。
 //   AI は PC の中で動いています。Arduino が受け取るのは1文字だけです。
 //   書き込むときは PC と USB でつなぐ（書き込みと電源）。
@@ -27,7 +28,7 @@
 //
 // サーボの向き：サーボを軸（ホーン）が上になるように置き、上から見る。
 //   多くのサーボは角度の数字が大きいほど反時計回り（左回り）になるので、
-//   初めの値は 右＝0°、中央＝90°、左＝180°。
+//   初めの値は 右＝0°、中央（クラス「上」）＝90°、左＝180°。
 //   実物で左右が逆に動くときは、ANGLE_RIGHT と ANGLE_LEFT の数字を入れかえる。
 //
 // 生徒が変えるのは「★ここを変える」の中だけです（発展では handleCommand に1行足します）。
@@ -50,7 +51,7 @@ const char DEVICE_NAME[] = "NGS-01";
 
 // ② サーボの角度（0〜180）。左右が逆に動くときは、右と左の数字を入れかえる
 const int ANGLE_RIGHT  = 0;    // 右
-const int ANGLE_CENTER = 90;   // 中央
+const int ANGLE_CENTER = 90;   // 中央（クラス「上」のとき）
 const int ANGLE_LEFT   = 180;  // 左
 
 // ③ 届いた指示を LED マトリクスに表示する記号（横12 × 縦8。「#」が光る、「.」が消える）
@@ -88,7 +89,7 @@ const char* PICTURE_RIGHT[8] = {   // 右：右向きの矢印
   "............"
 };
 
-const char* PICTURE_CENTER[8] = {  // 中央：上向きの矢印
+const char* PICTURE_CENTER[8] = {  // 上（中央へ）：上向きの矢印
   ".....##.....",
   "....####....",
   "...######...",
@@ -212,7 +213,7 @@ void report() {
 }
 
 // 指示を受け取ったときの動き
-//   点灯・消灯ではサーボを動かさない。右・中央・左では LED を変えない。
+//   点灯・消灯ではサーボを動かさない。右・上・左では LED を変えない。
 void handleCommand(char cmd) {
   if (cmd == 'O') {               // 点灯：LED をつける
     digitalWrite(RED, HIGH);
@@ -226,7 +227,7 @@ void handleCommand(char cmd) {
     servo.write(ANGLE_RIGHT);
     lastAngle = ANGLE_RIGHT;
     showPicture(PICTURE_RIGHT);
-  } else if (cmd == 'C') {        // 中央：サーボを中央へ
+  } else if (cmd == 'C') {        // 上：サーボを中央へ戻す
     servo.write(ANGLE_CENTER);
     lastAngle = ANGLE_CENTER;
     showPicture(PICTURE_CENTER);
