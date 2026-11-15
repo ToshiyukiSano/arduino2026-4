@@ -11,10 +11,10 @@
   ・このページは、AI のライブラリ（TensorFlow.js・Teachable Machine）と学習したモデルを
     インターネットから読み込む。授業中はインターネットにつながっている必要がある。
     （Bluetooth の通信そのものは、PC と Arduino の間で直接行う）
-  ・AI の判定は、この PC の中で行う。Arduino へ送るのは1文字だけ（dai4_ai_remote と同じ UUID・同じ文字）：
-      O＝LED点灯、F＝LED消灯（ステージ1）／L＝左、C＝中央、R＝右（ステージ2）
-      1・2・3＝マトリクスの絵（ステージ3）／S＝LEDを順番に点灯（発展）／N＝待機（何も変えない）
-  ・「割り当て」のボタンで、クラスごとに送る文字をまとめて決める（待機以外のクラスを作った順に使う）。
+  ・AI の判定は、この PC の中で行う。Teachable Machine のクラス名で、Arduino へ送る1文字を決める
+    （dai4_ai_remote と同じ UUID・同じ文字）：
+      点灯 → O、消灯 → F、右 → R、中央 → C、左 → L、待機 → 何も送らない
+  ・クラス名はこのとおり（漢字）に入力する。違う名前のクラスは「送らない」になる（画面の欄で選び直せる）。
   ・Bluetooth の設定画面でのペアリングは不要。「Bluetoothで接続」を押し、
     Chrome が出す一覧から、自分の機器（NGS-01〜NGS-11）を選ぶ。
 -->
@@ -55,8 +55,7 @@
   #toggle { font-size:24px; font-weight:bold; min-width:12em; }
   #toggle.on { background:var(--ok); border-color:var(--ok); color:#fff; }
   .manual button { min-width:3.6em; font-weight:bold; padding:8px 10px; }
-  button.stage { font-weight:bold; }
-  button.stage.on { background:var(--ink); color:#fff; }
+  
   .settings { font-size:18px; color:var(--sub); display:flex; gap:24px; flex-wrap:wrap; margin-top:10px; }
   #msg { font-size:20px; font-weight:bold; min-height:1.4em; }
   #msg.ng { color:var(--ng); } #msg.ng::before { content:"⚠ "; }
@@ -81,7 +80,7 @@
 </div>
 
 <div class="card">
-  <h2><span class="num">2</span>カメラで手話・ジェスチャーを見分ける</h2>
+  <h2><span class="num">2</span>カメラで手話・ポーズを見分ける</h2>
   <div class="grid2">
     <div>
       <div id="cam">カメラ映像</div>
@@ -91,13 +90,7 @@
     </div>
     <div>
       <div style="font-size:16px;color:var(--sub)">認識結果とスコア（長いほど、そのクラスに近いと判定。必ず正しい確率ではありません）</div>
-      <div id="classes"><p class="note">モデルを読み込むと、ここにクラスが出ます。右の欄が、そのクラスのときに送る文字です。</p></div>
-      <div class="row" style="margin-top:10px">
-        <span style="font-size:18px">割り当て：</span>
-        <button class="stage" data-stage="1" disabled>① LED</button>
-        <button class="stage" data-stage="2" disabled>② サーボ</button>
-        <button class="stage" data-stage="3" disabled>③ マトリクス</button>
-      </div>
+      <div id="classes"><p class="note">モデルを読み込むと、ここにクラスが出ます。クラス名（点灯・消灯・右・中央・左・待機）で、送る文字が決まります。</p></div>
       <div class="settings">
         <label>送る条件：スコア
           <select id="threshold"><option value="0.6">0.6 以上</option><option value="0.7">0.7 以上</option><option value="0.8" selected>0.8 以上</option><option value="0.9">0.9 以上</option></select></label>
@@ -126,17 +119,14 @@
     <span class="manual row">
       <button data-cmd="O" disabled>点灯</button>
       <button data-cmd="F" disabled>消灯</button>
-      <button data-cmd="L" disabled>左</button>
-      <button data-cmd="C" disabled>中央</button>
       <button data-cmd="R" disabled>右</button>
-      <button data-cmd="1" disabled>絵1</button>
-      <button data-cmd="2" disabled>絵2</button>
-      <button data-cmd="3" disabled>絵3</button>
+      <button data-cmd="C" disabled>中央</button>
+      <button data-cmd="L" disabled>左</button>
     </span>
   </div>
   <div class="info">
     <div class="box"><b>AIの判定</b><span id="judge">—</span></div>
-    <div class="box"><b>Arduinoへ送った命令</b><span id="sent">—</span></div>
+    <div class="box"><b>Arduinoへ最後に送った命令</b><span id="sent">—</span></div>
     <div class="box"><b>Arduinoからの返事</b><span id="reply">—</span></div>
   </div>
 </div>
@@ -154,50 +144,32 @@ const NAME_PREFIX  = 'NGS-';
 const SERVICE_UUID = '2fb61ef3-3619-447d-8e6c-58a330ada446';
 const COMMAND_UUID = 'a757a3b8-787c-44bb-a768-95c597baf42b';
 const STATUS_UUID  = '67fc9eee-e535-4917-99f6-222dc95351ce';
-const CMD_NAME = { O: 'LED点灯', F: 'LED消灯', L: '左', C: '中央', R: '右', '1': '絵1', '2': '絵2', '3': '絵3', S: '順番に点灯', N: '待機' };
-const CMD_COLOR = { O: 'var(--a)', F: '#7b8794', L: 'var(--b)', C: 'var(--c)', R: '#8e44ad', '1': '#d97706', '2': '#0f766e', '3': '#9d174d', S: '#b45309', N: 'var(--n)', '': '#c4cad3' };
-// 割り当て：待機以外のクラスを、作った順にこの文字へ
-const STAGES = { 1: ['O', 'F'], 2: ['L', 'C', 'R'], 3: ['1', '2', '3'] };
-const OPTIONS = [['', '送らない'], ['O', 'O（LED点灯）'], ['F', 'F（LED消灯）'], ['L', 'L（左）'], ['C', 'C（中央）'], ['R', 'R（右）'],
-  ['1', '1（絵1）'], ['2', '2（絵2）'], ['3', '3（絵3）'], ['S', 'S（順番に点灯・発展）'], ['N', 'N（待機）']];
+const CMD_NAME = { O: '点灯', F: '消灯', R: '右', C: '中央', L: '左' };
+const CMD_COLOR = { O: 'var(--a)', F: '#7b8794', R: '#8e44ad', C: 'var(--c)', L: 'var(--b)', '': '#c4cad3' };
+// クラス名 → 送る文字（待機は送らない）
+const NAME_TO_CMD = { '点灯': 'O', '消灯': 'F', '右': 'R', '中央': 'C', '左': 'L', '待機': '' };
+const OPTIONS = [['', '送らない'], ['O', 'O（点灯）'], ['F', 'F（消灯）'], ['R', 'R（右）'], ['C', 'C（中央）'], ['L', 'L（左）']];
 
 const $ = (id) => document.getElementById(id);
 let device = null, commandChar = null, statusChar = null, connecting = false;
 let writing = Promise.resolve();
-let model = null, webcam = null, labels = [], classCmd = [], running = false, stage = 1;
+let model = null, webcam = null, labels = [], classCmd = [], running = false;
 let aiOn = false, lastSent = '', candidate = '', candidateSince = 0;
 
 function log(t) { const el = $('log'); el.textContent = new Date().toLocaleTimeString('ja-JP') + '  ' + t + '\n' + el.textContent.slice(0, 4000); }
 function msg(t, cls) { $('msg').textContent = 'メッセージ：' + t; $('msg').className = cls || ''; }
 function connected() { return !!(device && device.gatt && device.gatt.connected && commandChar); }
 
-// 待機のクラスか（名前で判定）
-function isWait(name) {
-  const t = String(name).normalize('NFKC').toUpperCase().replace(/\s/g, '');
-  return /待機|まち|なし|NONE|NOTHING|WAIT|EMPTY|BACKGROUND|背景/.test(t);
-}
-
-// 割り当て：待機は N、それ以外は作った順に STAGES の文字（足りないクラスは「送らない」）
-function assignStage(n) {
-  if (!labels.length) return;
-  const list = STAGES[n]; let k = 0;
-  classCmd = labels.map(l => isWait(l) ? 'N' : (k < list.length ? list[k++] : ''));
-  stage = n;
-  document.querySelectorAll('button.stage').forEach(b => b.classList.toggle('on', b.dataset.stage === String(n)));
-  buildClasses();
-  lastSent = ''; candidate = '';
-  const extra = labels.filter(l => !isWait(l)).length - list.length;
-  msg('割り当て：' + ['', '① LED', '② サーボ', '③ マトリクス'][n] + '（' + labels.map((l, i) => l + '→' + (CMD_NAME[classCmd[i]] || '送らない')).join('、') + '）' +
-    (extra > 0 ? '。クラスが多いので、' + extra + '個は送りません' : ''), 'ok');
-  log('割り当て ' + n + '：' + classCmd.join(','));
-}
+function normName(name) { return String(name).normalize('NFKC').replace(/\s/g, ''); }
+// クラス名から送る文字を決める（決まった名前以外は「送らない」）
+function commandFor(name) { const n = normName(name); return Object.prototype.hasOwnProperty.call(NAME_TO_CMD, n) ? NAME_TO_CMD[n] : ''; }
+function knownName(name) { return Object.prototype.hasOwnProperty.call(NAME_TO_CMD, normName(name)); }
 
 function refresh() {
   const c = connected();
   $('connect').disabled = c || connecting;
   $('disconnect').disabled = !c;
   document.querySelectorAll('.manual button').forEach(b => b.disabled = !c);
-  document.querySelectorAll('button.stage').forEach(b => b.disabled = !model);
   $('toggle').disabled = !(c && model && running);
   if (!c && aiOn) setAi(false);
   const st = $('status');
@@ -211,7 +183,7 @@ function setAi(on) {
   $('toggle').textContent = on ? 'AIで操作：有効' : 'AIで操作：停止中';
   $('toggle').classList.toggle('on', on);
   candidate = ''; candidateSince = 0;
-  if (on) { lastSent = ''; msg('AIで操作しています。手話やジェスチャーを出してください', 'ok'); }
+  if (on) { lastSent = ''; msg('AIで操作しています。手話・ポーズを出してください', 'ok'); }
 }
 
 // ---------- 1. モデル ----------
@@ -236,8 +208,12 @@ async function loadModel() {
     try { localStorage.setItem('dai4_model_url', url); } catch (e) {}
     log('モデル：' + url + '（' + labels.join('／') + '）');
     $('startCam').disabled = false;
+    classCmd = labels.map(commandFor);
+    buildClasses();
+    const unknown = labels.filter(l => !knownName(l));
+    msg('モデルを読み込みました（クラス：' + labels.join('・') + '）' +
+      (unknown.length ? '。「' + unknown.join('」「') + '」は決まったクラス名ではないので送りません（右の欄で選べます）' : ''), unknown.length ? 'ng' : 'ok');
     refresh();
-    assignStage(stage);
   } catch (e) {
     msg('モデルを読み込めませんでした。リンクが正しいか、インターネットにつながっているか確かめてください', 'ng');
     log('モデル読み込み失敗：' + (e && e.message));
@@ -256,8 +232,10 @@ function buildClasses() {
       .map(([v, t]) => '<option value="' + v + '"' + (classCmd[i] === v ? ' selected' : '') + '>' + t + '</option>').join('');
     row.innerHTML = '<span class="name"></span><div class="bar"><span></span></div><span class="pct">0%</span><select aria-label="送る文字">' + opts + '</select>';
     row.querySelector('.name').textContent = name;
+    if (normName(name) === '待機') { row.querySelector('select').outerHTML = '<span style="font-size:16px;color:var(--sub)">待機（送らない）</span>'; }
     row.querySelector('.bar span').style.background = CMD_COLOR[classCmd[i]];
-    row.querySelector('select').onchange = (e) => { classCmd[i] = e.target.value; row.querySelector('.bar span').style.background = CMD_COLOR[classCmd[i]]; };
+    const sel = row.querySelector('select');
+    if (sel) sel.onchange = (e) => { classCmd[i] = e.target.value; row.querySelector('.bar span').style.background = CMD_COLOR[classCmd[i]]; };
     box.appendChild(row);
   });
 }
@@ -273,7 +251,7 @@ async function startCam() {
     await webcam.play();
     $('cam').innerHTML = ''; $('cam').appendChild(webcam.canvas);
     if (!running) { running = true; requestAnimationFrame(loop); }
-    msg('カメラを使っています。手話やジェスチャーを出して、バーの長さを確かめてください', 'ok');
+    msg('カメラを使っています。手話・ポーズを出して、バーの長さを確かめてください', 'ok');
   } catch (e) {
     msg('カメラを使えませんでした。カメラの使用を「許可」したか、ほかのページ（Teachable Machine など）がカメラを使っていないか確かめてください', 'ng');
     log('カメラ失敗：' + (e && e.message));
@@ -308,11 +286,15 @@ function show(pred) {
   $('judge').textContent = pred[top].className + '（' + prob.toFixed(2) + '）';
   if (!aiOn) return;
   // 誤動作を減らす：スコアが条件以上で、同じ判定が一定時間続いたら、変わったときだけ送る
+  // 待機（送らない）のときは何も送らない。待機が続いたら、次の指示は同じものでも送れるようにする
   const th = parseFloat($('threshold').value), hold = parseFloat($('hold').value) * 1000;
   const now = performance.now();
-  if (!cmd || prob < th) { candidate = ''; return; }
-  if (cmd !== candidate) { candidate = cmd; candidateSince = now; return; }
-  if (now - candidateSince >= hold && cmd !== lastSent) sendCmd(cmd, 'AI');
+  const key = cmd || ('-' + top);
+  if (prob < th) { candidate = ''; return; }
+  if (key !== candidate) { candidate = key; candidateSince = now; return; }
+  if (now - candidateSince < hold) return;
+  if (!cmd) { if (normName(pred[top].className) === '待機') lastSent = ''; return; }
+  if (cmd !== lastSent) sendCmd(cmd, 'AI');
 }
 
 // ---------- 3. Bluetooth ----------
@@ -321,7 +303,7 @@ function onStatus(e) {
   if (!s) return;
   log('Arduino：' + s);
   const p = s.split(':');
-  if (p.length >= 4 && CMD_NAME[p[0]]) $('reply').textContent = p[0] + 'を受け取った\nLED：' + (p[1] === '1' ? '点灯' : '消灯') + '　サーボ：' + p[2] + '°';
+  if (p.length >= 4) $('reply').textContent = (CMD_NAME[p[0]] ? CMD_NAME[p[0]] + '（' + p[0] + '）を受け取った' : 'まだ指示なし') + '\nLED：' + (p[1] === '1' ? '点灯' : '消灯') + '　サーボ：' + p[2] + '°';
   else $('reply').textContent = s;
 }
 
@@ -395,7 +377,6 @@ $('startCam').onclick = startCam;
 $('connect').onclick = connect;
 $('disconnect').onclick = () => { if (device && device.gatt.connected) device.gatt.disconnect(); };
 $('toggle').onclick = () => setAi(!aiOn);
-document.querySelectorAll('button.stage').forEach(b => b.onclick = () => assignStage(Number(b.dataset.stage)));
 document.querySelectorAll('.manual button').forEach(b => b.onclick = () => { if (aiOn) setAi(false); sendCmd(b.dataset.cmd, '手'); });
 
 // 開いた環境の確認

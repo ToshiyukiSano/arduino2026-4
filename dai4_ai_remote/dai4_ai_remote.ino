@@ -1,4 +1,4 @@
-// dai4_ai_remote（第4回：手話やジェスチャーをAIで見分けて、Arduino を操作する）
+// dai4_ai_remote（第4回：手話・ポーズをAIで見分けて、Arduino を操作する）
 // 【教材・実機未検証】
 //
 // ボード：Arduino UNO R4 WiFi（UNO R3・R4 Minima では動きません）
@@ -6,23 +6,29 @@
 //   （UNO R4 WiFi の通信用モジュールのファームウェアが 0.2.0 以上であること）
 //
 // 配線（基本）：
-//   ステージ1：外付けLED 1個　D2 → 抵抗 → LED の＋（長い足）、LED の−（短い足）→ GND
-//   ステージ2：サーボ　信号 → D9、電源（＋）→ 5V、GND（−）→ GND（第3回と同じ）
-//   ステージ3：本体の LED マトリクス（配線なし）
+//   ステップ1：外付けLED 1個　D2 → 抵抗 → LED の＋（長い足）、LED の−（短い足）→ GND
+//   ステップ2：サーボ　信号 → D9、電源（＋）→ 5V、GND（−）→ GND（第3回と同じ）
+//   本体の LED マトリクス：届いた指示の記号を表示する（配線なし）
 // 配線（発展・時間が余った人）：
 //   LED を追加　D3・D4・D5・D6（それぞれ 抵抗 → LED → GND）
 //
-// しくみ：
-//   PC（Chrome で開いた index.html）の AI が、カメラの画像のクラスを見分ける
-//   → 操作ページで決めた1文字を Bluetooth（BLE）で送る → Arduino が動く。
-//     O = LED 点灯　F = LED 消灯　　　　　　　　（ステージ1）
-//     L = サーボ左　C = サーボ中央　R = サーボ右　（ステージ2）
-//     1・2・3 = LED マトリクスの絵　　　　　　　（ステージ3）
-//     S = LED を順番に点灯　　　　　　　　　　　（発展）
-//     N = 待機（何も変えない）
+// 操作指示は5種類。PC（Chrome で開いた index.html）の AI がカメラの画像を見分け、
+// クラス名に合わせて1文字を Bluetooth（BLE）で送る：
+//     クラス「点灯」→ O：LED を点灯（サーボはそのまま）
+//     クラス「消灯」→ F：LED を消灯（サーボはそのまま）
+//     クラス「右」　→ R：サーボを右へ（LED はそのまま）
+//     クラス「中央」→ C：サーボを中央へ（LED はそのまま）
+//     クラス「左」　→ L：サーボを左へ（LED はそのまま）
+//     クラス「待機」→ 何も送らない（LED もサーボも、直前の状態のまま）
+//   届いた指示は、LED マトリクスに記号で表示する。
 //   AI は PC の中で動いています。Arduino が受け取るのは1文字だけです。
 //   書き込むときは PC と USB でつなぐ（書き込みと電源）。
 //   書き込んだあとは PC の USB を外し、USB 充電器などから Arduino の USB 端子へ給電する。
+//
+// サーボの向き：サーボを軸（ホーン）が上になるように置き、上から見る。
+//   多くのサーボは角度の数字が大きいほど反時計回り（左回り）になるので、
+//   初めの値は 右＝0°、中央＝90°、左＝180°。
+//   実物で左右が逆に動くときは、ANGLE_RIGHT と ANGLE_LEFT の数字を入れかえる。
 //
 // 生徒が変えるのは「★ここを変える」の中だけです（発展では handleCommand に1行足します）。
 
@@ -31,7 +37,7 @@
 #include "Arduino_LED_Matrix.h"  // 本体の LED マトリクスを使うための機能を読み込む
 
 // LED のピン（ここは変えない）
-const int RED    = 2;   // 基本の LED（ステージ1）
+const int RED    = 2;   // 基本の LED（ステップ1）
 const int YELLOW = 3;   // 発展
 const int BLUE   = 4;   // 発展
 const int GREEN  = 5;   // 発展
@@ -42,36 +48,47 @@ const int WHITE  = 6;   // 発展
 // ① 機器名：先生から割り当てられた自分の番号にする（NGS-01 〜 NGS-11）
 const char DEVICE_NAME[] = "NGS-01";
 
-// ② ステージ2：サーボの角度（0〜180）
-const int ANGLE_LEFT   = 180;  // 左
-const int ANGLE_CENTER = 90;   // 中央
+// ② サーボの角度（0〜180）。左右が逆に動くときは、右と左の数字を入れかえる
 const int ANGLE_RIGHT  = 0;    // 右
+const int ANGLE_CENTER = 90;   // 中央
+const int ANGLE_LEFT   = 180;  // 左
 
-// ③ ステージ3：LED マトリクスの絵（横12 × 縦8。「#」が光る、「.」が消える）
-//    1行は必ず12文字。行は8行。
-const char* PICTURE_1[8] = {   // 絵1：ハート
-  "............",
-  "..##....##..",
-  ".####..####.",
+// ③ 届いた指示を LED マトリクスに表示する記号（横12 × 縦8。「#」が光る、「.」が消える）
+//    1行は必ず12文字。行は8行。余裕があれば、自分の記号に描きかえてよい
+const char* PICTURE_ON[8] = {      // 点灯：光っている丸
+  "....####....",
+  "..########..",
+  ".##########.",
+  ".##########.",
+  ".##########.",
   ".##########.",
   "..########..",
-  "...######...",
-  ".....##.....",
-  "............"
+  "....####...."
 };
 
-const char* PICTURE_2[8] = {   // 絵2：にこにこ
+const char* PICTURE_OFF[8] = {     // 消灯：中が空の丸
   "....####....",
   "..##....##..",
-  ".#..#..#..#.",
   ".#........#.",
-  ".#.#....#.#.",
-  ".#..####..#.",
+  ".#........#.",
+  ".#........#.",
+  ".#........#.",
   "..##....##..",
   "....####...."
 };
 
-const char* PICTURE_3[8] = {   // 絵3：上向きの矢印（余裕があれば使う）
+const char* PICTURE_RIGHT[8] = {   // 右：右向きの矢印
+  "............",
+  ".......#....",
+  ".......##...",
+  ".##########.",
+  ".##########.",
+  ".......##...",
+  ".......#....",
+  "............"
+};
+
+const char* PICTURE_CENTER[8] = {  // 中央：上向きの矢印
   ".....##.....",
   "....####....",
   "...######...",
@@ -82,11 +99,22 @@ const char* PICTURE_3[8] = {   // 絵3：上向きの矢印（余裕があれば
   "............"
 };
 
+const char* PICTURE_LEFT[8] = {    // 左：左向きの矢印
+  "............",
+  "....#.......",
+  "...##.......",
+  ".##########.",
+  ".##########.",
+  "...##.......",
+  "....#.......",
+  "............"
+};
+
 // =================== ★ここを変える（ここまで）===================
 
-static_assert(ANGLE_LEFT >= 0 && ANGLE_LEFT <= 180, "ANGLE_LEFT は 0〜180 にしてください");
-static_assert(ANGLE_CENTER >= 0 && ANGLE_CENTER <= 180, "ANGLE_CENTER は 0〜180 にしてください");
 static_assert(ANGLE_RIGHT >= 0 && ANGLE_RIGHT <= 180, "ANGLE_RIGHT は 0〜180 にしてください");
+static_assert(ANGLE_CENTER >= 0 && ANGLE_CENTER <= 180, "ANGLE_CENTER は 0〜180 にしてください");
+static_assert(ANGLE_LEFT >= 0 && ANGLE_LEFT <= 180, "ANGLE_LEFT は 0〜180 にしてください");
 
 // ---- ここから下は、発展で handleCommand に1行足すとき以外は変更しない ----
 const int SERVO_PIN = 9;  // サーボの信号の線（D9）
@@ -102,10 +130,10 @@ BLEStringCharacteristic statusChar("67fc9eee-e535-4917-99f6-222dc95351ce",
 Servo servo;
 ArduinoLEDMatrix matrix;
 bool bleReady = false;
-char lastCommand = 'N';
+char lastCommand = '-';   // まだ指示を受け取っていない
 int lastAngle = 90;
 bool redOn = false;
-char pendingCmd = 0;  // Bluetooth で届いた指示（loop の中で動かす）
+char pendingCmd = 0;      // Bluetooth で届いた指示（loop の中で動かす）
 
 // つながったときの絵（小さなチェック）
 const char* PICTURE_READY[8] = {
@@ -175,7 +203,7 @@ void ledSequence() {
   ledsOff();
 }
 
-// PC へ今の状態を知らせる（例：「L:0:180:NGS-01」＝最後の文字:LED:角度:機器名）
+// PC へ今の状態を知らせる（例：「R:1:0:NGS-01」＝最後の指示:LED（1＝点灯）:角度:機器名）
 void report() {
   char text[32];
   snprintf(text, sizeof(text), "%c:%d:%d:%s", lastCommand, redOn ? 1 : 0, lastAngle, DEVICE_NAME);
@@ -184,32 +212,28 @@ void report() {
 }
 
 // 指示を受け取ったときの動き
+//   点灯・消灯ではサーボを動かさない。右・中央・左では LED を変えない。
 void handleCommand(char cmd) {
-  if (cmd == 'O') {               // ステージ1：O なら LED 点灯
+  if (cmd == 'O') {               // 点灯：LED をつける
     digitalWrite(RED, HIGH);
     redOn = true;
-  } else if (cmd == 'F') {        // ステージ1：F なら LED 消灯
+    showPicture(PICTURE_ON);
+  } else if (cmd == 'F') {        // 消灯：LED を消す
     digitalWrite(RED, LOW);
     redOn = false;
-  } else if (cmd == 'L') {        // ステージ2：L ならサーボを左へ
-    servo.write(ANGLE_LEFT);
-    lastAngle = ANGLE_LEFT;
-    // 発展：ここに ledOnly(YELLOW); などを1行足すと、LED も切り替わる
-  } else if (cmd == 'C') {        // ステージ2：C ならサーボを中央へ
-    servo.write(ANGLE_CENTER);
-    lastAngle = ANGLE_CENTER;
-  } else if (cmd == 'R') {        // ステージ2：R ならサーボを右へ
+    showPicture(PICTURE_OFF);
+  } else if (cmd == 'R') {        // 右：サーボを右へ
     servo.write(ANGLE_RIGHT);
     lastAngle = ANGLE_RIGHT;
-  } else if (cmd == '1') {        // ステージ3：1 なら絵1
-    showPicture(PICTURE_1);
-  } else if (cmd == '2') {        // ステージ3：2 なら絵2
-    showPicture(PICTURE_2);
-  } else if (cmd == '3') {        // ステージ3：3 なら絵3
-    showPicture(PICTURE_3);
-  } else if (cmd == 'S') {        // 発展：S なら LED を順番に点灯
-    ledSequence();
-  } else if (cmd == 'N') {        // 待機：何も変えない
+    showPicture(PICTURE_RIGHT);
+  } else if (cmd == 'C') {        // 中央：サーボを中央へ
+    servo.write(ANGLE_CENTER);
+    lastAngle = ANGLE_CENTER;
+    showPicture(PICTURE_CENTER);
+  } else if (cmd == 'L') {        // 左：サーボを左へ
+    servo.write(ANGLE_LEFT);
+    lastAngle = ANGLE_LEFT;
+    showPicture(PICTURE_LEFT);
   } else {
     return;  // それ以外（改行など）は何もしない
   }
@@ -233,8 +257,7 @@ void onConnected(BLEDevice central) {
 // PC との接続が切れたとき
 void onDisconnected(BLEDevice central) {
   Serial.println("disconnected");
-  ledsOff();
-  showNumber();     // 番号の表示に戻す（サーボはその角度のまま）
+  showNumber();     // 番号の表示に戻す（LED とサーボはそのまま）
   BLE.advertise();  // もう一度つなげるように待つ
 }
 
@@ -245,9 +268,9 @@ void setup() {
   for (int i = 0; i < 5; i++) pinMode(LED_PINS[i], OUTPUT);
   ledsOff();
 
-  servo.attach(SERVO_PIN);  // サーボの信号を出すピン（D9）
-  servo.write(90);          // 電源を入れたら 90°（中央）へ
-  lastAngle = 90;
+  servo.attach(SERVO_PIN);    // サーボの信号を出すピン（D9）
+  servo.write(ANGLE_CENTER);  // 電源を入れたら中央へ
+  lastAngle = ANGLE_CENTER;
 
   if (BLE.begin()) {
     BLE.setLocalName(DEVICE_NAME);
@@ -272,7 +295,7 @@ void setup() {
       ".....##.....", "....#..#....", "...#....#...", "............"
     };
     showPicture(PICTURE_ERROR);
-    Serial.println("BLE start failed. Serial Monitor (9600): O F L C R 1 2 3 S N");
+    Serial.println("BLE start failed. Serial Monitor (9600): O F R C L");
   }
 }
 
@@ -285,7 +308,7 @@ void loop() {
     handleCommand(cmd);
   }
 
-  // 予備：シリアルモニター（9600）から O・F・L・C・R・1・2・3・S・N を送っても動く
+  // 予備：シリアルモニター（9600）から O・F・R・C・L を送っても動く
   while (Serial.available() > 0) {
     handleCommand((char)Serial.read());
   }
