@@ -1,124 +1,96 @@
-// dai4_ai_remote（第4回：手の合図をAIで見分けて、LED・LEDマトリクス・サーボを動かす）
-// 【新規作成の教材・実機未検証】
+// dai4_ai_remote（第4回：手話やジェスチャーをAIで見分けて、Arduino を操作する）
+// 【教材・実機未検証】
 //
 // ボード：Arduino UNO R4 WiFi（UNO R3・R4 Minima では動きません）
 // 必要なライブラリ：Servo、ArduinoBLE
 //   （UNO R4 WiFi の通信用モジュールのファームウェアが 0.2.0 以上であること）
 //
-// 配線：
-//   外付けLED（それぞれ 抵抗 → LED の＋（長い足）、LED の−（短い足）→ GND）
-//     赤 D2　黄 D3　青 D4　緑 D5　白 D6
-//   サーボ：信号 → D9、電源（＋）→ 5V、GND（−）→ GND（第3回と同じ）
-//   1桁7セグ（追加課題・選択）：a〜g → D7・D8・D10・D11・D12・A0・A1
+// 配線（基本）：
+//   ステージ1：外付けLED 1個　D2 → 抵抗 → LED の＋（長い足）、LED の−（短い足）→ GND
+//   ステージ2：サーボ　信号 → D9、電源（＋）→ 5V、GND（−）→ GND（第3回と同じ）
+//   ステージ3：本体の LED マトリクス（配線なし）
+// 配線（発展・時間が余った人）：
+//   LED を追加　D3・D4・D5・D6（それぞれ 抵抗 → LED → GND）
 //
 // しくみ：
-//   PC（Chrome で開いた index.html）のAIが、カメラの画像を「合図A・合図B・合図C・待機」に見分ける
-//   → Bluetooth Low Energy（BLE）で1文字を送る → Arduino が LED・マトリクス・サーボを動かす。
-//     A = 合図A　B = 合図B　C = 合図C　N = 待機（手を出していない）
-//   AI はPCの中で動いています。Arduino が受け取るのは1文字だけです。
+//   PC（Chrome で開いた index.html）の AI が、カメラの画像のクラスを見分ける
+//   → 操作ページで決めた1文字を Bluetooth（BLE）で送る → Arduino が動く。
+//     O = LED 点灯　F = LED 消灯　　　　　　　　（ステージ1）
+//     L = サーボ左　C = サーボ中央　R = サーボ右　（ステージ2）
+//     1・2・3 = LED マトリクスの絵　　　　　　　（ステージ3）
+//     S = LED を順番に点灯　　　　　　　　　　　（発展）
+//     N = 待機（何も変えない）
+//   AI は PC の中で動いています。Arduino が受け取るのは1文字だけです。
 //   書き込むときは PC と USB でつなぐ（書き込みと電源）。
 //   書き込んだあとは PC の USB を外し、USB 充電器などから Arduino の USB 端子へ給電する。
 //
-// 生徒が変えるのは「★ここを変える」の中だけです。
+// 生徒が変えるのは「★ここを変える」の中だけです（発展では handleCommand に1行足します）。
 
 #include <Servo.h>               // サーボを動かすための機能を読み込む
 #include <ArduinoBLE.h>          // Bluetooth（BLE）を使うための機能を読み込む
 #include "Arduino_LED_Matrix.h"  // 本体の LED マトリクスを使うための機能を読み込む
 
-// LED のピン（配線と同じ。ここは変えない）
-const int RED    = 2;
-const int YELLOW = 3;
-const int BLUE   = 4;
-const int GREEN  = 5;
-const int WHITE  = 6;
-const int NONE   = -1;  // 「光らせない」
+// LED のピン（ここは変えない）
+const int RED    = 2;   // 基本の LED（ステージ1）
+const int YELLOW = 3;   // 発展
+const int BLUE   = 4;   // 発展
+const int GREEN  = 5;   // 発展
+const int WHITE  = 6;   // 発展
 
 // =================== ★ここを変える（ここから）===================
 
 // ① 機器名：先生から割り当てられた自分の番号にする（NGS-01 〜 NGS-11）
 const char DEVICE_NAME[] = "NGS-01";
 
-// ② 合図のときに光らせる LED（RED・YELLOW・BLUE・GREEN・WHITE・NONE）
-//    2個目も光らせたいときは、LED_A2 などに色を入れる（光らせないときは NONE）
-const int LED_A  = RED;     // 合図A
-const int LED_A2 = NONE;
-const int LED_B  = BLUE;    // 合図B
-const int LED_B2 = NONE;
-const int LED_C  = GREEN;   // 合図C（応用）
-const int LED_C2 = NONE;
+// ② ステージ2：サーボの角度（0〜180）
+const int ANGLE_LEFT   = 180;  // 左
+const int ANGLE_CENTER = 90;   // 中央
+const int ANGLE_RIGHT  = 0;    // 右
 
-// ③ 合図のときのサーボの角度（0〜180）。待機のときは、今の角度のまま
-const int ANGLE_A = 0;      // 合図A
-const int ANGLE_B = 180;    // 合図B
-const int ANGLE_C = 90;     // 合図C（応用）
-
-// ④ LED マトリクスの絵（横12 × 縦8。「#」が光る、「.」が消える）
+// ③ ステージ3：LED マトリクスの絵（横12 × 縦8。「#」が光る、「.」が消える）
 //    1行は必ず12文字。行は8行。
-const char* PICTURE_A[8] = {   // 合図A：数字の1
+const char* PICTURE_1[8] = {   // 絵1：ハート
   "............",
-  ".....##.....",
-  "....###.....",
-  ".....##.....",
-  ".....##.....",
-  ".....##.....",
-  "....####....",
-  "............"
-};
-
-const char* PICTURE_B[8] = {   // 合図B：数字の2
-  "............",
-  "....####....",
-  "...##..##...",
-  ".......##...",
-  "......##....",
-  ".....##.....",
+  "..##....##..",
+  ".####..####.",
+  ".##########.",
+  "..########..",
   "...######...",
+  ".....##.....",
   "............"
 };
 
-const char* PICTURE_C[8] = {   // 合図C：数字の3（応用）
-  "............",
-  "...######...",
-  ".......##...",
-  ".....###....",
-  ".......##...",
-  "...##..##...",
+const char* PICTURE_2[8] = {   // 絵2：にこにこ
   "....####....",
-  "............"
+  "..##....##..",
+  ".#..#..#..#.",
+  ".#........#.",
+  ".#.#....#.#.",
+  ".#..####..#.",
+  "..##....##..",
+  "....####...."
 };
 
-const char* PICTURE_WAIT[8] = {  // 待機：点が3つ
-  "............",
-  "............",
-  "............",
-  "............",
+const char* PICTURE_3[8] = {   // 絵3：上向きの矢印（余裕があれば使う）
+  ".....##.....",
+  "....####....",
+  "...######...",
   "..##.##.##..",
-  "............",
-  "............",
+  ".....##.....",
+  ".....##.....",
+  ".....##.....",
   "............"
 };
-
-// ⑤ 追加課題：1桁7セグLED（使うときだけ true にする）
-const bool USE_7SEG = false;
-const bool COMMON_ANODE = false;  // 共通アノードの7セグなら true（型番で確認）
-const int DIGIT_A = 1;            // 合図Aで表示する数字（0〜9）
-const int DIGIT_B = 2;            // 合図B
-const int DIGIT_C = 3;            // 合図C
 
 // =================== ★ここを変える（ここまで）===================
 
-// ---- 数値の確かめ（範囲の外なら、書き込む前に止まって知らせる）----
-static_assert(ANGLE_A >= 0 && ANGLE_A <= 180, "ANGLE_A は 0〜180 にしてください");
-static_assert(ANGLE_B >= 0 && ANGLE_B <= 180, "ANGLE_B は 0〜180 にしてください");
-static_assert(ANGLE_C >= 0 && ANGLE_C <= 180, "ANGLE_C は 0〜180 にしてください");
-static_assert(DIGIT_A >= 0 && DIGIT_A <= 9, "DIGIT_A は 0〜9 にしてください");
-static_assert(DIGIT_B >= 0 && DIGIT_B <= 9, "DIGIT_B は 0〜9 にしてください");
-static_assert(DIGIT_C >= 0 && DIGIT_C <= 9, "DIGIT_C は 0〜9 にしてください");
+static_assert(ANGLE_LEFT >= 0 && ANGLE_LEFT <= 180, "ANGLE_LEFT は 0〜180 にしてください");
+static_assert(ANGLE_CENTER >= 0 && ANGLE_CENTER <= 180, "ANGLE_CENTER は 0〜180 にしてください");
+static_assert(ANGLE_RIGHT >= 0 && ANGLE_RIGHT <= 180, "ANGLE_RIGHT は 0〜180 にしてください");
 
-// ---- ここから下は変更しない ----
+// ---- ここから下は、発展で handleCommand に1行足すとき以外は変更しない ----
 const int SERVO_PIN = 9;  // サーボの信号の線（D9）
 const int LED_PINS[5] = {RED, YELLOW, BLUE, GREEN, WHITE};
-const int SEG_PINS[7] = {7, 8, 10, 11, 12, A0, A1};  // a b c d e f g
 
 // BLE の設定（index.html と同じ番号。第3回とは別の番号）
 BLEService remoteService("2fb61ef3-3619-447d-8e6c-58a330ada446");
@@ -132,6 +104,14 @@ ArduinoLEDMatrix matrix;
 bool bleReady = false;
 char lastCommand = 'N';
 int lastAngle = 90;
+bool redOn = false;
+char pendingCmd = 0;  // Bluetooth で届いた指示（loop の中で動かす）
+
+// つながったときの絵（小さなチェック）
+const char* PICTURE_READY[8] = {
+  "............", "............", "..........#.", ".........#..",
+  "..#.....#...", "...#...#....", "....#.#.....", ".....#......"
+};
 
 // 数字（横3 × 縦5）：待っている間、機器名の番号を LED マトリクスに表示する
 const char* DIGITS[10][5] = {
@@ -140,12 +120,6 @@ const char* DIGITS[10][5] = {
   {"#.#", "#.#", "###", "..#", "..#"}, {"###", "#..", "###", "..#", "###"},
   {"###", "#..", "###", "#.#", "###"}, {"###", "..#", "..#", "..#", "..#"},
   {"###", "#.#", "###", "#.#", "###"}, {"###", "#.#", "###", "..#", "###"}
-};
-
-// 7セグの光らせ方（a b c d e f g の順。1 が光る）
-const uint8_t SEG_DIGITS[10][7] = {
-  {1,1,1,1,1,1,0}, {0,1,1,0,0,0,0}, {1,1,0,1,1,0,1}, {1,1,1,1,0,0,1}, {0,1,1,0,0,1,1},
-  {1,0,1,1,0,1,1}, {1,0,1,1,1,1,1}, {1,1,1,0,0,0,0}, {1,1,1,1,1,1,1}, {1,1,1,1,0,1,1}
 };
 
 // 絵（8行 × 12文字）を LED マトリクスに表示する
@@ -178,67 +152,66 @@ void showNumber() {
   matrix.renderBitmap(frame, 8, 12);
 }
 
-// 外付けLEDをすべて消す
+// 外付け LED をすべて消す
 void ledsOff() {
   for (int i = 0; i < 5; i++) digitalWrite(LED_PINS[i], LOW);
+  redOn = false;
 }
 
-// 外付けLEDを光らせる（NONE なら何もしない）
-void ledOn(int pin) {
-  if (pin != NONE) digitalWrite(pin, HIGH);
+// 発展：指定した LED だけを光らせる（ほかは消す）
+void ledOnly(int pin) {
+  ledsOff();
+  digitalWrite(pin, HIGH);
+  redOn = (pin == RED);
 }
 
-// 7セグに数字を出す（digit が -1 なら消す）
-void showDigit(int digit) {
-  if (!USE_7SEG) return;
-  for (int s = 0; s < 7; s++) {
-    bool on = (digit >= 0) && SEG_DIGITS[digit][s];
-    if (COMMON_ANODE) on = !on;  // 共通アノードは LOW で光る
-    digitalWrite(SEG_PINS[s], on ? HIGH : LOW);
+// 発展：LED を D2 → D6 の順に1回ずつ光らせる
+void ledSequence() {
+  for (int i = 0; i < 5; i++) {
+    ledOnly(LED_PINS[i]);
+    delay(200);
+    BLE.poll();  // 光らせている間も Bluetooth の処理を続ける
   }
+  ledsOff();
 }
 
-// PC へ今の状態を知らせる（例：「A:0:NGS-01」）
+// PC へ今の状態を知らせる（例：「L:0:180:NGS-01」＝最後の文字:LED:角度:機器名）
 void report() {
   char text[32];
-  snprintf(text, sizeof(text), "%c:%d:%s", lastCommand, lastAngle, DEVICE_NAME);
+  snprintf(text, sizeof(text), "%c:%d:%d:%s", lastCommand, redOn ? 1 : 0, lastAngle, DEVICE_NAME);
   Serial.println(text);
   if (bleReady) statusChar.writeValue(text);
 }
 
 // 指示を受け取ったときの動き
 void handleCommand(char cmd) {
-  if (cmd >= 'a' && cmd <= 'z') cmd = cmd - 'a' + 'A';  // 小文字も受け付ける
-  if (cmd == 'A') {               // A なら合図A
-    ledsOff();
-    ledOn(LED_A);                 // 合図Aの LED を光らせる
-    ledOn(LED_A2);
-    showPicture(PICTURE_A);       // 合図Aの絵を表示
-    servo.write(ANGLE_A);         // 合図Aの角度へ
-    lastAngle = ANGLE_A;
-    showDigit(DIGIT_A);
-  } else if (cmd == 'B') {        // そうでなく、B なら合図B
-    ledsOff();
-    ledOn(LED_B);
-    ledOn(LED_B2);
-    showPicture(PICTURE_B);
-    servo.write(ANGLE_B);
-    lastAngle = ANGLE_B;
-    showDigit(DIGIT_B);
-  } else if (cmd == 'C') {        // そうでなく、C なら合図C（応用）
-    ledsOff();
-    ledOn(LED_C);
-    ledOn(LED_C2);
-    showPicture(PICTURE_C);
-    servo.write(ANGLE_C);
-    lastAngle = ANGLE_C;
-    showDigit(DIGIT_C);
-  } else if (cmd == 'N') {        // そうでなく、N なら待機
-    ledsOff();                    // LED を消す
-    showPicture(PICTURE_WAIT);    // 待機の絵を表示
-    showDigit(-1);                // サーボは今の角度のまま
+  if (cmd == 'O') {               // ステージ1：O なら LED 点灯
+    digitalWrite(RED, HIGH);
+    redOn = true;
+  } else if (cmd == 'F') {        // ステージ1：F なら LED 消灯
+    digitalWrite(RED, LOW);
+    redOn = false;
+  } else if (cmd == 'L') {        // ステージ2：L ならサーボを左へ
+    servo.write(ANGLE_LEFT);
+    lastAngle = ANGLE_LEFT;
+    // 発展：ここに ledOnly(YELLOW); などを1行足すと、LED も切り替わる
+  } else if (cmd == 'C') {        // ステージ2：C ならサーボを中央へ
+    servo.write(ANGLE_CENTER);
+    lastAngle = ANGLE_CENTER;
+  } else if (cmd == 'R') {        // ステージ2：R ならサーボを右へ
+    servo.write(ANGLE_RIGHT);
+    lastAngle = ANGLE_RIGHT;
+  } else if (cmd == '1') {        // ステージ3：1 なら絵1
+    showPicture(PICTURE_1);
+  } else if (cmd == '2') {        // ステージ3：2 なら絵2
+    showPicture(PICTURE_2);
+  } else if (cmd == '3') {        // ステージ3：3 なら絵3
+    showPicture(PICTURE_3);
+  } else if (cmd == 'S') {        // 発展：S なら LED を順番に点灯
+    ledSequence();
+  } else if (cmd == 'N') {        // 待機：何も変えない
   } else {
-    return;  // A・B・C・N 以外（改行など）は何もしない
+    return;  // それ以外（改行など）は何もしない
   }
   lastCommand = cmd;
   report();
@@ -246,14 +219,14 @@ void handleCommand(char cmd) {
 
 // Bluetooth で指示が届いたとき
 void onCommandWritten(BLEDevice central, BLECharacteristic characteristic) {
-  handleCommand((char)commandChar.value());
+  pendingCmd = (char)commandChar.value();  // ここでは受け取るだけ。動かすのは loop の中
 }
 
 // PC とつながったとき
 void onConnected(BLEDevice central) {
   Serial.print("connected: ");
   Serial.println(central.address());
-  showPicture(PICTURE_WAIT);  // つながったら待機の絵
+  showPicture(PICTURE_READY);  // つながったらチェックの絵
   report();
 }
 
@@ -261,7 +234,6 @@ void onConnected(BLEDevice central) {
 void onDisconnected(BLEDevice central) {
   Serial.println("disconnected");
   ledsOff();
-  showDigit(-1);
   showNumber();     // 番号の表示に戻す（サーボはその角度のまま）
   BLE.advertise();  // もう一度つなげるように待つ
 }
@@ -272,15 +244,10 @@ void setup() {
 
   for (int i = 0; i < 5; i++) pinMode(LED_PINS[i], OUTPUT);
   ledsOff();
-  if (USE_7SEG) {
-    for (int s = 0; s < 7; s++) pinMode(SEG_PINS[s], OUTPUT);  // A0・A1 もデジタル出力として使う
-    showDigit(-1);
-  }
 
   servo.attach(SERVO_PIN);  // サーボの信号を出すピン（D9）
-  servo.write(90);          // 電源を入れたら 90° へ
+  servo.write(90);          // 電源を入れたら 90°（中央）へ
   lastAngle = 90;
-  lastCommand = 'N';
 
   if (BLE.begin()) {
     BLE.setLocalName(DEVICE_NAME);
@@ -305,14 +272,20 @@ void setup() {
       ".....##.....", "....#..#....", "...#....#...", "............"
     };
     showPicture(PICTURE_ERROR);
-    Serial.println("BLE start failed. Serial Monitor (9600): A / B / C / N");
+    Serial.println("BLE start failed. Serial Monitor (9600): O F L C R 1 2 3 S N");
   }
 }
 
 void loop() {
   if (bleReady) BLE.poll();  // Bluetooth の処理（止めずに毎回まわす）
 
-  // 予備：シリアルモニター（9600）から A・B・C・N を送っても動く
+  if (pendingCmd != 0) {     // Bluetooth で指示が届いていたら動かす
+    char cmd = pendingCmd;
+    pendingCmd = 0;
+    handleCommand(cmd);
+  }
+
+  // 予備：シリアルモニター（9600）から O・F・L・C・R・1・2・3・S・N を送っても動く
   while (Serial.available() > 0) {
     handleCommand((char)Serial.read());
   }
