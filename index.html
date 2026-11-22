@@ -104,6 +104,7 @@
     <h2><span class="num">2</span>カメラを使う</h2>
     <div class="row">
       <button id="startCam" disabled>カメラを使う</button>
+      <button id="stopCam" disabled>カメラを止める</button>
       <span id="camLine" class="line" style="margin:0">①のあとで押します</span>
     </div>
   </div>
@@ -168,6 +169,8 @@
       </table>
       <div>「Class 6」など上の表にない名前のクラスは、送りません。Teachable Machine でクラス名を直し、学習し直して「Update my cloud model」を押してから、「モデルを再読み込み」を押します。</div>
       <div>Teachable Machine で学習し直しただけでは、共有リンクのモデルは変わりません。「Export Model」→「Update my cloud model」で更新が終わってから「モデルを再読み込み」を押します。</div>
+      <div>追加撮影に戻るとき：AIを「一時停止」→②「カメラを止める」→TMで撮影・再学習・クラウド更新。TMの撮影欄を×で閉じ、PreviewのInputをOFFにしてから、このページで「モデルを再読み込み」→「カメラを使う」→「再開」。接続が切れていれば③でつなぎ直します。</div>
+      <div>更新が反映されないとき：TMで更新完了を確認→URLを確認→「モデルを再読み込み」。新しいURLなら欄に貼って「モデルを読み込む」。それでも直らなければ、この操作ページを開き直して①②③を設定します。TMのタブは残してください。</div>
       <div>カメラ映像は鏡のように左右反転して表示されます。左右は「AIの判定」と、実際のサーボの動きで確かめます。</div>
     </div>
   </details>
@@ -191,7 +194,8 @@ const $ = (id) => document.getElementById(id);
 let device = null, commandChar = null, statusChar = null, connecting = false;
 let writing = Promise.resolve();
 let model = null, modelUrl = '', modelStamp = '', labels = [], classCmd = [];
-let webcam = null, camReady = false, loopRunning = false, busy = false;
+let webcam = null, camReady = false, camStarting = false, loopRunning = false, busy = false;
+let commandEpoch = 0;
 let loading = false, loadSeq = 0, retired = [];
 let paused = false, wasActive = false, lastSent = '', candidate = -1, candidateSince = 0;
 
@@ -215,7 +219,8 @@ function refresh() {
   document.querySelectorAll('.manual button').forEach(b => b.disabled = !c);
   $('loadModel').disabled = loading;
   $('reloadModel').disabled = loading || !modelUrl;
-  $('startCam').disabled = !model || camReady || loading;
+  $('startCam').disabled = !model || camReady || camStarting || loading;
+  $('stopCam').disabled = !camReady;
   const st = $('status');
   if (c) { st.className = 'status ok'; $('statusSym').textContent = '✓'; $('statusText').textContent = '接続中：' + (device.name || '（名前なし）'); }
   else if (connecting) { st.className = 'status'; $('statusSym').textContent = '…'; $('statusText').textContent = '接続しています：一覧から自分の機器を選んでください'; }
@@ -227,7 +232,7 @@ function refresh() {
     resetJudge();
     log('AI操作 開始');
   }
-  if (!active && wasActive) { candidate = -1; log('AI操作 停止'); }
+  if (!active && wasActive) { commandEpoch++; candidate = -1; log('AI操作 停止'); }
   wasActive = active;
   const box = $('aiBox'), pb = $('pause');
   let cls, text;
@@ -261,6 +266,7 @@ function reason(e, where) {
 }
 
 async function loadModel(isReload) {
+  if (loading) return;
   if (typeof tmImage === 'undefined') { msg('AI のライブラリを読み込めませんでした。インターネットにつながっているか確かめて、ページを開き直してください', 'ng'); return; }
   const url = isReload ? modelUrl : normalizeUrl($('modelUrl').value);
   if (!/^https:\/\//.test(url)) { msg('Teachable Machine の共有リンク（https:// で始まる）を貼り付けてください', 'ng'); return; }
@@ -268,23 +274,26 @@ async function loadModel(isReload) {
   loading = true; refresh();                     // 読み込み中は送信しない
   line('modelLine', '読み込み中…（このあいだは命令を送りません）', 'wait');
   msg(isReload ? 'モデルを取り直しています…' : 'モデルを読み込んでいます…');
-  // キャッシュを使わないための目印。tfjs は model.json の「?」以降を重みファイルの URL にも付けて取りに行く
-  const bust = '?v=' + Date.now();
+  // 全ファイルを明示的に no-store で取得する。重みURLへのクエリ引き継ぎに依存しない。
+  const bust = Date.now() + '-' + seq;
+  let pendingModel = null;
   let step = 'metadata.json';
   try {
-    const res = await fetch(url + 'metadata.json' + bust, { cache: 'no-store' });
+    const res = await fetchFresh(url + 'metadata.json', bust);
     if (!res.ok) throw new Error('HTTP ' + res.status + (res.status === 404 ? ' Not Found' : ''));
     const meta = await res.json();
     const stamp = meta.timeStamp || '';
     step = 'model.json・重みファイル';
-    const m = await tmImage.load(url + 'model.json' + bust, meta);
-    if (seq !== loadSeq) { try { m.dispose(); } catch (e) {} return; }   // 後から押した読み込みを優先
+    const artifacts = await fetchModelArtifacts(url, bust);
+    const m = pendingModel = await tmImage.load({ load: async () => artifacts }, meta);
+    if (seq !== loadSeq) return;   // 後から押した読み込みを優先
     const newLabels = m.getClassLabels();
     if (!newLabels || !newLabels.length) throw new Error('クラスがありません');
+    if (m.getTotalClasses() !== newLabels.length) throw new Error('モデルとクラス一覧が一致しません。更新完了後に再読み込みしてください');
     // ここで初めて新しいモデルに切り替える
     const old = model;
     const same = isReload && old && stamp && stamp === modelStamp;
-    model = m; modelUrl = url; modelStamp = stamp; labels = newLabels;
+    model = m; pendingModel = null; modelUrl = url; modelStamp = stamp; labels = newLabels;
     if (old && old !== m) retired.push(old);
     disposeRetired();
     classCmd = labels.map(commandFor);
@@ -297,8 +306,8 @@ async function loadModel(isReload) {
     line('modelLine', '読み込みました：' + new Date().toLocaleTimeString('ja-JP') + '（モデルの日時：' + t + '・' + labels.length + 'クラス）', same ? 'wait' : 'ok');
     let text = (isReload ? 'モデルを取り直しました' : 'モデルを読み込みました') + '（クラス：' + labels.join('・') + '）';
     let bad = false;
-    if (same) { text += '。前と同じモデルです。Teachable Machine で「Update my cloud model」を押し、「up to date」の表示を確かめてから、もう一度押してください'; bad = true; }
-    if (unknown.length) { text += '。「' + unknown.join('」「') + '」は決まったクラス名ではないので送りません（例：Class 6 は「待機」に直す）'; bad = true; }
+    if (same) { text += '。モデルの日時が前と同じです（内容が同じとは限りません）。Teachable Machine で「Update my cloud model」を押し、「up to date」の表示を確かめてから、もう一度押してください'; bad = true; }
+    if (unknown.length) { text += '。「' + unknown.join('」「') + '」は決まったクラス名ではないので送りません（TMで画像と名前の対応を確認して修正）'; bad = true; }
     msg(text, bad ? 'ng' : 'ok');
   } catch (e) {
     if (seq !== loadSeq) return;
@@ -313,14 +322,46 @@ async function loadModel(isReload) {
       msg(r, 'ng');
     }
   } finally {
+    if (pendingModel) disposeModel(pendingModel);
     if (seq === loadSeq) { loading = false; refresh(); }
   }
+}
+
+// モデル・メタデータ・全重みファイルを新しいURLで取得する。
+async function fetchFresh(path, bust) {
+  const u = new URL(path);
+  u.searchParams.set('v', bust);
+  const res = await fetch(u.href, { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status + (res.status === 404 ? ' Not Found' : ''));
+  return res;
+}
+async function fetchModelArtifacts(base, bust) {
+  const json = await (await fetchFresh(base + 'model.json', bust)).json();
+  const weightSpecs = [], chunks = [];
+  for (const group of json.weightsManifest || []) {
+    weightSpecs.push(...group.weights);
+    for (const path of group.paths) {
+      const response = await fetchFresh(new URL(path, base).href, bust);
+      chunks.push(new Uint8Array(await response.arrayBuffer()));
+    }
+  }
+  const joined = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.length; }
+  return { modelTopology: json.modelTopology, weightSpecs, weightData: joined.buffer };
+}
+function disposeModel(m) {
+  // 読み込んだCustomMobileNetが保持する推論用LayersModelを解放する。
+  try {
+    if (m.model && typeof m.model.dispose === 'function') m.model.dispose();
+    else if (typeof m.dispose === 'function') m.dispose();
+  } catch (e) { log('モデル解放：' + e.message); }
 }
 
 // 古いモデルのメモリを返す（判定の途中では返さない）
 function disposeRetired() {
   if (busy) return;
-  while (retired.length) { const m = retired.pop(); try { m.dispose(); } catch (e) {} }
+  while (retired.length) disposeModel(retired.pop());
 }
 
 function buildClasses() {
@@ -340,7 +381,8 @@ function buildClasses() {
 
 // ---------- 2. カメラ ----------
 async function startCam() {
-  if (!model || camReady) return;
+  if (!model || camReady || camStarting) return;
+  camStarting = true;
   $('startCam').disabled = true;
   try {
     if (webcam) { try { webcam.stop(); } catch (e) {} }
@@ -354,9 +396,23 @@ async function startCam() {
     msg('カメラを使っています。手の合図を出して、バーの長さを確かめてください', 'ok');
   } catch (e) {
     msg('カメラを使えませんでした。カメラの使用を「許可」したか、ほかのページ（Teachable Machine など）がカメラを使っていないか確かめてください', 'ng');
+    if (webcam) { try { webcam.stop(); } catch (_) {} }
+    webcam = null; camReady = false;
     line('camLine', '使えませんでした', 'ng');
     log('カメラ失敗：' + (e && e.message));
   }
+  camStarting = false;
+  refresh();
+}
+
+function stopCam() {
+  camReady = false;
+  if (webcam) { try { webcam.stop(); } catch (e) { log('カメラ停止：' + e.message); } }
+  webcam = null;
+  resetJudge();
+  $('cam').textContent = 'カメラ停止中';
+  line('camLine', '停止中：TMで追加撮影できます');
+  msg('カメラを止めました。Teachable Machineのタブへ戻れます。戻ったら②でカメラを再開してください');
   refresh();
 }
 
@@ -365,10 +421,10 @@ async function loop() {
   webcam.update();
   if (!busy && model) {
     busy = true;
-    const m = model, seq = loadSeq;
+    const m = model, seq = loadSeq, cam = webcam;
     try {
       const pred = await m.predict(webcam.canvas);
-      if (m === model && seq === loadSeq && !loading) show(pred);   // 切り替え前のモデルの結果は使わない
+      if (m === model && seq === loadSeq && camReady && cam === webcam && !loading) show(pred);   // 切り替え前のモデルの結果は使わない
     } catch (e) { log('判定失敗：' + (e && e.message)); }
     busy = false;
     disposeRetired();
@@ -458,10 +514,13 @@ async function connect() {
   }
 }
 
-function send(c) {
-  const ch = commandChar;
+function send(c, from) {
+  const ch = commandChar, epoch = commandEpoch;
   if (!ch) return Promise.reject(new Error('未接続'));
-  const p = writing.then(() => ch.writeValueWithResponse(new Uint8Array([c.charCodeAt(0)])));
+  const p = writing.then(() => {
+    if (epoch !== commandEpoch || ch !== commandChar || !connected() || (from === 'AI' && !aiActive())) return false;
+    return ch.writeValueWithResponse(new Uint8Array([c.charCodeAt(0)])).then(() => true);
+  });
   writing = p.catch(() => {});
   return p;
 }
@@ -470,7 +529,7 @@ async function sendCmd(c, from) {
   if (!connected()) return;
   lastSent = c;
   try {
-    await send(c);
+    if (!await send(c, from)) return;
     $('sent').textContent = c + '（' + CMD_NAME[c] + '）';
     log('送信：' + c + '（' + from + '）');
   } catch (e) {
@@ -483,9 +542,11 @@ async function sendCmd(c, from) {
 $('loadModel').onclick = () => loadModel(false);
 $('reloadModel').onclick = () => loadModel(true);
 $('startCam').onclick = startCam;
+$('stopCam').onclick = stopCam;
+['threshold', 'hold'].forEach(id => $(id).onchange = resetJudge);
 $('connect').onclick = connect;
 $('disconnect').onclick = () => { if (device && device.gatt.connected) device.gatt.disconnect(); };
-$('pause').onclick = () => { paused = !paused; msg(paused ? 'AI操作を一時停止しました' : 'AI操作を再開しました。新しく 0.5 秒続いた判定から送ります', paused ? '' : 'ok'); refresh(); };
+$('pause').onclick = () => { paused = !paused; msg(paused ? 'AI操作を一時停止しました' : 'AI操作を再開しました。設定した時間だけ続いた判定から送ります', paused ? '' : 'ok'); refresh(); };
 document.querySelectorAll('.manual button').forEach(b => b.onclick = () => {
   if (!paused) { paused = true; refresh(); msg('手で試すため、AI操作を一時停止しました。戻すときは「再開」を押してください'); }
   sendCmd(b.dataset.cmd, '手');
