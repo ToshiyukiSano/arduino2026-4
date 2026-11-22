@@ -11,128 +11,166 @@
   ・このページは、AI のライブラリ（TensorFlow.js・Teachable Machine）と学習したモデルを
     インターネットから読み込む。授業中はインターネットにつながっている必要がある。
     （Bluetooth の通信そのものは、PC と Arduino の間で直接行う）
-  ・AI の判定は、この PC の中で行う。Teachable Machine のクラス名で、Arduino へ送る1文字を決める
-    （dai4_ai_remote と同じ UUID・同じ文字）：
-      点灯 → O、消灯 → F、右 → R、上 → C（サーボを中央へ）、左 → L、待機 → 何も送らない
-  ・クラス名はこのとおり（漢字）に入力する。違う名前のクラスは「送らない」になる（画面の欄で選び直せる）。
-  ・Bluetooth の設定画面でのペアリングは不要。「Bluetoothで接続」を押し、
-    Chrome が出す一覧から、自分の機器（NGS-01〜NGS-11）を選ぶ。
+  ・AI の判定は、この PC の中で行う。クラスの並び順ではなく、Teachable Machine のクラス名で、
+    Arduino へ送る1文字を決める（dai4_ai_remote と同じ UUID・同じ文字）：
+      点灯 → O、消灯 → F、右 → R、上 → C（サーボを中央 90° へ）、左 → L、待機 → 何も送らない
+  ・クラス名はこのとおり（漢字）に入力する。違う名前のクラス（例：Class 6）は「送らない」になる。
+  ・送る条件（初めの値）：同じクラスが、スコア 0.70 以上を 0.5 秒続けたときに、判定が変わったときだけ送る。
+  ・①モデル・②カメラの準備ができていて、③Arduino とつながると、AI 操作が自動で始まる。
+    「一時停止」で止め、「再開」で戻す。切断すると送信は止まる。
+  ・「モデルを再読み込み」：Teachable Machine で「Update my cloud model」を押したあと、
+    キャッシュを使わずに model.json・metadata.json・重みファイルを取り直す。
+    読み込み中は送信を止め、成功してから新しいモデルに切り替える。
 -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
 <style>
-  :root { --ink:#1f2a44; --sub:#4b5565; --line:#c9d1e0; --soft:#eef2f8; --blue:#2b5daa; --ok:#1b7f4b; --ng:#b42318; --a:#d62828; --b:#1d5fd1; --c:#1e9e4a; --n:#616e7c; }
+  :root { --ink:#1f2a44; --sub:#4b5565; --line:#c9d1e0; --soft:#eef2f8; --blue:#2b5daa; --ok:#1b7f4b; --ng:#b42318; --warn:#9a5b00; --a:#d62828; --b:#1d5fd1; --c:#1e9e4a; --n:#616e7c; }
   * { box-sizing: border-box; }
   body { margin:0; font-family:"BIZ UDPGothic","Meiryo","Hiragino Sans",sans-serif; color:var(--ink); background:#fff; }
-  main { max-width: 1100px; margin: 0 auto; padding: 18px 18px 40px; }
-  h1 { font-size: 30px; margin: 0 0 14px; }
-  h2 { font-size: 22px; margin: 0 0 10px; }
-  .card { border:2px solid var(--line); border-radius:14px; padding:14px 18px; margin-bottom:16px; }
-  .num { display:inline-block; min-width:1.6em; height:1.6em; line-height:1.6em; border-radius:50%; background:var(--ink); color:#fff; text-align:center; margin-right:8px; font-size:20px; }
-  button { font: inherit; cursor:pointer; border-radius:12px; border:3px solid var(--ink); background:#fff; color:var(--ink); padding:10px 18px; font-size:20px; }
+  main { max-width: 1320px; margin: 0 auto; padding: 10px 16px 30px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  h2 { font-size: 19px; margin: 0 0 8px; }
+  .layout { display:grid; grid-template-columns: minmax(460px, 1fr) minmax(460px, 1.1fr); gap:14px; align-items:start; }
+  .card { border:2px solid var(--line); border-radius:12px; padding:10px 14px; margin-bottom:10px; }
+  .num { display:inline-block; min-width:1.5em; height:1.5em; line-height:1.5em; border-radius:50%; background:var(--ink); color:#fff; text-align:center; margin-right:6px; font-size:17px; }
+  button { font: inherit; cursor:pointer; border-radius:10px; border:3px solid var(--ink); background:#fff; color:var(--ink); padding:7px 14px; font-size:18px; }
   button:disabled { opacity:.3; cursor:not-allowed; }
-  button.main { font-size:24px; font-weight:bold; background:var(--blue); border-color:var(--blue); color:#fff; }
-  .row { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
-  input[type=text] { font: inherit; font-size:18px; padding:10px; border:2px solid var(--line); border-radius:10px; flex:1; min-width:280px; }
-  select { font: inherit; font-size:18px; padding:6px; border-radius:8px; }
-  .grid2 { display:grid; grid-template-columns: 340px 1fr; gap:18px; }
-  #cam { width:320px; height:320px; background:#dadce0; border-radius:12px; display:flex; align-items:center; justify-content:center; overflow:hidden; color:var(--sub); font-size:18px; }
-  #cam canvas { width:320px; height:320px; }
-  .cls { display:grid; grid-template-columns: 9em 1fr 4.2em 11em; gap:10px; align-items:center; margin:8px 0; font-size:20px; }
-  .bar { height:28px; background:#e4e7eb; border-radius:6px; overflow:hidden; }
+  button.main { font-size:20px; font-weight:bold; background:var(--blue); border-color:var(--blue); color:#fff; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input[type=text] { font: inherit; font-size:16px; padding:8px; border:2px solid var(--line); border-radius:8px; width:100%; }
+  select { font: inherit; font-size:16px; padding:4px; border-radius:8px; }
+  .line { font-size:17px; margin-top:6px; }
+  .line.ok { color:var(--ok); font-weight:bold; } .line.ng { color:var(--ng); font-weight:bold; } .line.wait { color:var(--warn); font-weight:bold; }
+  .status { font-size:20px; font-weight:bold; padding:8px 12px; border:3px dashed var(--ink); border-radius:10px; margin-top:8px; display:flex; gap:10px; align-items:center; }
+  .status .sym { font-size:24px; width:32px; text-align:center; }
+  .status.ok { border-style:solid; border-color:var(--ok); color:var(--ok); }
+  .status.ng { border-color:var(--ng); color:var(--ng); }
+  .ai { font-size:20px; font-weight:bold; padding:8px 12px; border-radius:10px; border:3px solid var(--line); background:var(--soft); display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .ai.on { border-color:var(--ok); background:#e6f4ec; color:var(--ok); }
+  .ai.wait { border-color:#e0b25a; background:#fff6e5; color:var(--warn); }
+  .ai.pause { border-color:var(--sub); background:#eceff3; color:var(--sub); }
+  .ai.off { color:var(--sub); }
+  #aiText { flex:1; min-width:14em; }
+  #pause { font-size:18px; font-weight:bold; }
+  #msg { font-size:17px; font-weight:bold; min-height:1.3em; margin-top:8px; }
+  #msg.ng { color:var(--ng); } #msg.ng::before { content:"⚠ "; }
+  #msg.ok { color:var(--ok); }
+  .camwrap { display:grid; grid-template-columns: 240px 1fr; gap:12px; }
+  #cam { width:240px; height:240px; background:#dadce0; border-radius:10px; display:flex; align-items:center; justify-content:center; overflow:hidden; color:var(--sub); font-size:16px; text-align:center; }
+  #cam canvas { width:240px; height:240px; }
+  .cls { display:grid; grid-template-columns: 5.5em 1fr 3.4em; gap:8px; align-items:center; margin:5px 0; font-size:17px; }
+  .cls .to { grid-column: 1 / -1; font-size:13px; color:var(--sub); margin:-4px 0 2px; }
+  .bar { height:22px; background:#e4e7eb; border-radius:6px; overflow:hidden; }
   .bar span { display:block; height:100%; width:0; background:var(--n); transition: width .1s; }
   .cls.top .name { font-weight:bold; }
   .cls.top .bar { outline:3px solid var(--ink); }
   .pct { text-align:right; font-family:"BIZ UDGothic",monospace; }
-  .status { font-size:24px; font-weight:bold; padding:12px 16px; border:4px dashed var(--ink); border-radius:12px; margin-top:12px; display:flex; gap:12px; align-items:center; }
-  .status .sym { font-size:30px; width:40px; text-align:center; }
-  .status.ok { border-style:solid; border-color:var(--ok); color:var(--ok); }
-  .status.ng { border-color:var(--ng); color:var(--ng); }
-  .info { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px; margin-top:14px; }
-  .box { border:2px solid var(--line); border-radius:10px; padding:10px 14px; font-size:22px; min-height:84px; }
+  .info { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; margin-top:10px; }
+  .box { border:2px solid var(--line); border-radius:10px; padding:6px 10px; font-size:18px; min-height:70px; }
   .box span { white-space:pre-line; }
-  .box b { display:block; font-size:16px; color:var(--sub); font-weight:normal; margin-bottom:4px; }
-  #toggle { font-size:24px; font-weight:bold; min-width:12em; }
-  #toggle.on { background:var(--ok); border-color:var(--ok); color:#fff; }
-  .manual button { min-width:3.6em; font-weight:bold; padding:8px 10px; }
-  
-  .settings { font-size:18px; color:var(--sub); display:flex; gap:24px; flex-wrap:wrap; margin-top:10px; }
-  #msg { font-size:20px; font-weight:bold; min-height:1.4em; }
-  #msg.ng { color:var(--ng); } #msg.ng::before { content:"⚠ "; }
-  #msg.ok { color:var(--ok); }
-  .note { font-size:16px; color:var(--sub); margin:8px 0 0; }
-  details { font-size:16px; color:var(--sub); }
-  #log { font-family:"BIZ UDGothic",monospace; font-size:14px; background:var(--soft); border-radius:8px; padding:8px; height:120px; overflow:auto; white-space:pre-wrap; }
-  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } .info { grid-template-columns: 1fr; } }
+  .box b { display:block; font-size:14px; color:var(--sub); font-weight:normal; margin-bottom:2px; }
+  .manual { margin-top:10px; font-size:16px; color:var(--sub); }
+  .manual button { min-width:3.2em; font-weight:bold; padding:5px 8px; font-size:17px; }
+  .note { font-size:14px; color:var(--sub); margin:6px 0 0; }
+  details { font-size:16px; color:var(--sub); margin-top:4px; }
+  details summary { cursor:pointer; font-weight:bold; }
+  .settings { display:grid; gap:8px; margin-top:8px; }
+  .settings select { margin:0 4px; }
+  .map { border-collapse:collapse; margin-top:6px; font-size:15px; }
+  .map td, .map th { border:1px solid var(--line); padding:3px 8px; }
+  #log { font-family:"BIZ UDGothic",monospace; font-size:13px; background:var(--soft); border-radius:8px; padding:8px; height:120px; overflow:auto; white-space:pre-wrap; }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } .camwrap { grid-template-columns: 1fr; } .info { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <main>
 <h1>AIで操作するページ（第4回）</h1>
+<div class="layout">
 
-<div class="card">
-  <h2><span class="num">1</span>AIのモデルを読み込む</h2>
-  <div class="row">
-    <input type="text" id="modelUrl" placeholder="Teachable Machine の共有リンク（https://teachablemachine.withgoogle.com/models/…/）" aria-label="モデルのURL">
-    <button id="loadModel" class="main">モデルを読み込む</button>
-  </div>
-  <p class="note">Teachable Machine で「Export Model」→「Upload my model」を押すと表示されるリンクを貼り付けます。学習し直したら、新しいリンクで読み込み直します。</p>
-</div>
-
-<div class="card">
-  <h2><span class="num">2</span>カメラで手話・ポーズを見分ける</h2>
-  <div class="grid2">
-    <div>
-      <div id="cam">カメラ映像</div>
-      <div class="row" style="margin-top:10px">
-        <button id="startCam" disabled>カメラを使う</button>
-      </div>
+<!-- 左の列：順番に押す操作（スクロールしなくても ③ まで見える） -->
+<section aria-label="操作">
+  <div class="card">
+    <h2><span class="num">1</span>AIのモデルを読み込む</h2>
+    <input type="text" id="modelUrl" placeholder="共有リンク（https://teachablemachine.withgoogle.com/models/…/）" aria-label="モデルのURL">
+    <div class="row" style="margin-top:8px">
+      <button id="loadModel" class="main">モデルを読み込む</button>
+      <button id="reloadModel" disabled>モデルを再読み込み</button>
     </div>
-    <div>
-      <div style="font-size:16px;color:var(--sub)">認識結果とスコア（長いほど、そのクラスに近いと判定。必ず正しい確率ではありません）</div>
-      <div id="classes"><p class="note">モデルを読み込むと、ここにクラスが出ます。クラス名（点灯・消灯・右・上・左・待機）で、送る文字が決まります。</p></div>
-      <div class="settings">
-        <label>送る条件：スコア
-          <select id="threshold"><option value="0.6">0.6 以上</option><option value="0.7">0.7 以上</option><option value="0.8" selected>0.8 以上</option><option value="0.9">0.9 以上</option></select></label>
-        <label>同じ判定が
-          <select id="hold"><option value="0.5">0.5 秒</option><option value="1" selected>1 秒</option><option value="1.5">1.5 秒</option><option value="2">2 秒</option></select> 続いたら</label>
-      </div>
+    <div id="modelLine" class="line">まだ読み込んでいません</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="num">2</span>カメラを使う</h2>
+    <div class="row">
+      <button id="startCam" disabled>カメラを使う</button>
+      <span id="camLine" class="line" style="margin:0">①のあとで押します</span>
     </div>
   </div>
-</div>
 
-<div class="card">
-  <h2><span class="num">3</span>Arduino とつなぐ</h2>
-  <div class="row">
-    <button id="connect" class="main">Bluetoothで接続</button>
-    <button id="disconnect" disabled>切断</button>
+  <div class="card">
+    <h2><span class="num">3</span>Arduinoとつなぐ</h2>
+    <div class="row">
+      <button id="connect" class="main">Bluetoothで接続</button>
+      <button id="disconnect" disabled>切断</button>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite"><span class="sym" id="statusSym">■</span><span id="statusText">未接続：「Bluetoothで接続」を押してください</span></div>
   </div>
-  <div id="status" class="status" role="status" aria-live="polite"><span class="sym" id="statusSym">■</span><span id="statusText">未接続：「Bluetoothで接続」を押してください</span></div>
-  <p class="note">一覧から、自分の番号の機器（NGS-01〜NGS-11）を選びます。Bluetooth の設定画面でのペアリングは不要です。</p>
-</div>
 
-<div class="card">
-  <h2><span class="num">4</span>AIで操作する</h2>
-  <div class="row">
-    <button id="toggle" disabled>AIで操作：停止中</button>
-    <span style="font-size:18px;color:var(--sub)">手で試す：</span>
-    <span class="manual row">
+  <div id="aiBox" class="ai off" role="status" aria-live="polite">
+    <span id="aiText">AI操作：未接続</span>
+    <button id="pause" disabled>一時停止</button>
+  </div>
+  <div id="msg">メッセージ：—</div>
+</section>
+
+<!-- 右の列：カメラと判定 -->
+<section aria-label="判定">
+  <div class="card">
+    <div class="camwrap">
+      <div id="cam">カメラ映像<br>（②で表示）</div>
+      <div>
+        <div style="font-size:14px;color:var(--sub)">認識結果とスコア（長いほど、そのクラスに近いと判定。必ず正しい確率ではありません）</div>
+        <div id="classes"><p class="note">モデルを読み込むと、ここにクラスが出ます。送る文字はクラス名（点灯・消灯・左・上・右・待機）で決まります。</p></div>
+      </div>
+    </div>
+    <div class="info">
+      <div class="box"><b>AIの判定</b><span id="judge">—</span></div>
+      <div class="box"><b>最後に送った命令</b><span id="sent">—</span></div>
+      <div class="box"><b>Arduinoからの返事</b><span id="reply">—</span></div>
+    </div>
+    <div class="manual row">手で試す（押すとAI操作は一時停止）：
       <button data-cmd="O" disabled>点灯</button>
       <button data-cmd="F" disabled>消灯</button>
       <button data-cmd="R" disabled>右</button>
       <button data-cmd="C" disabled>上</button>
       <button data-cmd="L" disabled>左</button>
-    </span>
+    </div>
   </div>
-  <div class="info">
-    <div class="box"><b>AIの判定</b><span id="judge">—</span></div>
-    <div class="box"><b>Arduinoへ最後に送った命令</b><span id="sent">—</span></div>
-    <div class="box"><b>Arduinoからの返事</b><span id="reply">—</span></div>
-  </div>
+</section>
 </div>
 
 <div class="card">
-  <div id="msg">メッセージ：—</div>
+  <details>
+    <summary>詳しい設定と説明</summary>
+    <div class="settings">
+      <label>送る条件：同じクラスが、スコア
+        <select id="threshold"><option value="0.6">0.60</option><option value="0.7" selected>0.70</option><option value="0.8">0.80</option><option value="0.9">0.90</option></select>以上を
+        <select id="hold"><option value="0.3">0.3</option><option value="0.5" selected>0.5</option><option value="1">1</option><option value="1.5">1.5</option></select>秒続けたら送る</label>
+      <div>途中で別のクラスになったり、スコアが条件より下がったりすると、時間の計測は最初からやり直します。同じ命令は続けて送りません（判定が変わったときだけ送ります）。</div>
+      <table class="map"><tr><th>クラス名</th><th>送る文字</th><th>Arduinoの動き</th></tr>
+        <tr><td>点灯</td><td>O</td><td>LED（D2）を点ける</td></tr>
+        <tr><td>消灯</td><td>F</td><td>LED（D2）を消す</td></tr>
+        <tr><td>左</td><td>L</td><td>サーボを左（180°）へ</td></tr>
+        <tr><td>上</td><td>C</td><td>サーボを中央（90°）へ</td></tr>
+        <tr><td>右</td><td>R</td><td>サーボを右（0°）へ</td></tr>
+        <tr><td>待機</td><td>送らない</td><td>LED・サーボは今のまま</td></tr>
+      </table>
+      <div>「Class 6」など上の表にない名前のクラスは、送りません。Teachable Machine でクラス名を直し、学習し直して「Update my cloud model」を押してから、「モデルを再読み込み」を押します。</div>
+      <div>Teachable Machine で学習し直しただけでは、共有リンクのモデルは変わりません。「Export Model」→「Update my cloud model」で更新が終わってから「モデルを再読み込み」を押します。</div>
+      <div>カメラ映像は鏡のように左右反転して表示されます。左右は「AIの判定」と、実際のサーボの動きで確かめます。</div>
+    </div>
+  </details>
   <details><summary>記録（先生用）</summary><div id="log"></div></details>
 </div>
 </main>
@@ -144,82 +182,145 @@ const NAME_PREFIX  = 'NGS-';
 const SERVICE_UUID = '2fb61ef3-3619-447d-8e6c-58a330ada446';
 const COMMAND_UUID = 'a757a3b8-787c-44bb-a768-95c597baf42b';
 const STATUS_UUID  = '67fc9eee-e535-4917-99f6-222dc95351ce';
-const CMD_NAME = { O: '点灯', F: '消灯', R: '右', C: '上（中央へ）', L: '左' };
+const CMD_NAME = { O: '点灯', F: '消灯', R: '右・0°', C: '上・中央 90°', L: '左・180°' };
 const CMD_COLOR = { O: 'var(--a)', F: '#7b8794', R: '#8e44ad', C: 'var(--c)', L: 'var(--b)', '': '#c4cad3' };
-// クラス名 → 送る文字（待機は送らない）
+// クラス名 → 送る文字（並び順は使わない。待機は送らない）
 const NAME_TO_CMD = { '点灯': 'O', '消灯': 'F', '右': 'R', '上': 'C', '左': 'L', '待機': '' };
-const OPTIONS = [['', '送らない'], ['O', 'O（点灯）'], ['F', 'F（消灯）'], ['R', 'R（右）'], ['C', 'C（上：中央へ）'], ['L', 'L（左）']];
 
 const $ = (id) => document.getElementById(id);
 let device = null, commandChar = null, statusChar = null, connecting = false;
 let writing = Promise.resolve();
-let model = null, webcam = null, labels = [], classCmd = [], running = false;
-let aiOn = false, lastSent = '', candidate = '', candidateSince = 0;
+let model = null, modelUrl = '', modelStamp = '', labels = [], classCmd = [];
+let webcam = null, camReady = false, loopRunning = false, busy = false;
+let loading = false, loadSeq = 0, retired = [];
+let paused = false, wasActive = false, lastSent = '', candidate = -1, candidateSince = 0;
 
-function log(t) { const el = $('log'); el.textContent = new Date().toLocaleTimeString('ja-JP') + '  ' + t + '\n' + el.textContent.slice(0, 4000); }
+function log(t) { const el = $('log'); el.textContent = new Date().toLocaleTimeString('ja-JP') + '  ' + t + '\n' + el.textContent.slice(0, 6000); }
 function msg(t, cls) { $('msg').textContent = 'メッセージ：' + t; $('msg').className = cls || ''; }
+function line(id, t, cls) { $(id).textContent = t; $(id).className = 'line' + (cls ? ' ' + cls : ''); }
 function connected() { return !!(device && device.gatt && device.gatt.connected && commandChar); }
-
 function normName(name) { return String(name).normalize('NFKC').replace(/\s/g, ''); }
-// クラス名から送る文字を決める（決まった名前以外は「送らない」）
-function commandFor(name) { const n = normName(name); return Object.prototype.hasOwnProperty.call(NAME_TO_CMD, n) ? NAME_TO_CMD[n] : ''; }
 function knownName(name) { return Object.prototype.hasOwnProperty.call(NAME_TO_CMD, normName(name)); }
+function commandFor(name) { return knownName(name) ? NAME_TO_CMD[normName(name)] : ''; }
+
+// AI 操作をしてよいか：接続・モデル・カメラがそろい、読み込み中でも一時停止中でもない
+function aiActive() { return connected() && !!model && camReady && !loading && !paused; }
+
+function resetJudge() { candidate = -1; candidateSince = 0; lastSent = ''; }
 
 function refresh() {
   const c = connected();
   $('connect').disabled = c || connecting;
   $('disconnect').disabled = !c;
   document.querySelectorAll('.manual button').forEach(b => b.disabled = !c);
-  $('toggle').disabled = !(c && model && running);
-  if (!c && aiOn) setAi(false);
+  $('loadModel').disabled = loading;
+  $('reloadModel').disabled = loading || !modelUrl;
+  $('startCam').disabled = !model || camReady || loading;
   const st = $('status');
   if (c) { st.className = 'status ok'; $('statusSym').textContent = '✓'; $('statusText').textContent = '接続中：' + (device.name || '（名前なし）'); }
   else if (connecting) { st.className = 'status'; $('statusSym').textContent = '…'; $('statusText').textContent = '接続しています：一覧から自分の機器を選んでください'; }
   else { st.className = 'status'; $('statusSym').textContent = '■'; $('statusText').textContent = '未接続：「Bluetoothで接続」を押してください'; }
-}
 
-function setAi(on) {
-  aiOn = on;
-  $('toggle').textContent = on ? 'AIで操作：有効' : 'AIで操作：停止中';
-  $('toggle').classList.toggle('on', on);
-  candidate = ''; candidateSince = 0;
-  if (on) { lastSent = ''; msg('AIで操作しています。手話・ポーズを出してください', 'ok'); }
+  // AI 操作の状態表示
+  const active = aiActive();
+  if (active && !wasActive) {        // 始まった・再開したとき：前の判定は使わず、新しく 0.5 秒を数え直す
+    resetJudge();
+    log('AI操作 開始');
+  }
+  if (!active && wasActive) { candidate = -1; log('AI操作 停止'); }
+  wasActive = active;
+  const box = $('aiBox'), pb = $('pause');
+  let cls, text;
+  if (!c) { cls = 'off'; text = 'AI操作：未接続（③でつなぐと始まります）'; }
+  else if (loading) { cls = 'wait'; text = '準備待ち：モデルを読み込み中（送信を止めています）'; }
+  else if (!model) { cls = 'wait'; text = '準備待ち：①でモデルを読み込んでください'; }
+  else if (!camReady) { cls = 'wait'; text = '準備待ち：②「カメラを使う」を押してください'; }
+  else if (paused) { cls = 'pause'; text = '一時停止中：「再開」を押すとAI操作に戻ります'; }
+  else { cls = 'on'; text = 'AI操作中：手の合図を出してください'; }
+  box.className = 'ai ' + cls; $('aiText').textContent = text;
+  pb.textContent = paused ? '再開' : '一時停止';
+  pb.disabled = !(c && model && camReady && !loading);
 }
 
 // ---------- 1. モデル ----------
 function normalizeUrl(u) {
-  u = u.trim();
+  u = u.trim().replace(/[?#].*$/, '');
   if (!u) return '';
   u = u.replace(/(model\.json|metadata\.json)$/, '');
   if (!u.endsWith('/')) u += '/';
   return u;
 }
 
-async function loadModel() {
+// 読み込み失敗の理由を、生徒向けのことばにする
+function reason(e, where) {
+  const m = String((e && e.message) || e || '');
+  if (/404|not\s*found/i.test(m)) return where + 'が見つかりません。リンクが正しいか、Teachable Machine で「Upload my model」（更新のときは「Update my cloud model」）を押して完了したか確かめてください';
+  if (/failed to fetch|network|load failed/i.test(m)) return 'インターネットから取得できませんでした。インターネットへの接続と、リンクを確かめてください';
+  if (/json|unexpected token/i.test(m)) return where + 'の中身を読めませんでした。共有リンク（…/models/〇〇/）を貼り付けたか確かめてください';
+  return where + 'を読み込めませんでした（' + m.slice(0, 80) + '）';
+}
+
+async function loadModel(isReload) {
   if (typeof tmImage === 'undefined') { msg('AI のライブラリを読み込めませんでした。インターネットにつながっているか確かめて、ページを開き直してください', 'ng'); return; }
-  const url = normalizeUrl($('modelUrl').value);
+  const url = isReload ? modelUrl : normalizeUrl($('modelUrl').value);
   if (!/^https:\/\//.test(url)) { msg('Teachable Machine の共有リンク（https:// で始まる）を貼り付けてください', 'ng'); return; }
-  $('loadModel').disabled = true;
-  msg('モデルを読み込んでいます…');
+  const seq = ++loadSeq;
+  loading = true; refresh();                     // 読み込み中は送信しない
+  line('modelLine', '読み込み中…（このあいだは命令を送りません）', 'wait');
+  msg(isReload ? 'モデルを取り直しています…' : 'モデルを読み込んでいます…');
+  // キャッシュを使わないための目印。tfjs は model.json の「?」以降を重みファイルの URL にも付けて取りに行く
+  const bust = '?v=' + Date.now();
+  let step = 'metadata.json';
   try {
-    const m = await tmImage.load(url + 'model.json', url + 'metadata.json');
-    model = m;
-    labels = m.getClassLabels();
-    try { localStorage.setItem('dai4_model_url', url); } catch (e) {}
-    log('モデル：' + url + '（' + labels.join('／') + '）');
-    $('startCam').disabled = false;
+    const res = await fetch(url + 'metadata.json' + bust, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status + (res.status === 404 ? ' Not Found' : ''));
+    const meta = await res.json();
+    const stamp = meta.timeStamp || '';
+    step = 'model.json・重みファイル';
+    const m = await tmImage.load(url + 'model.json' + bust, meta);
+    if (seq !== loadSeq) { try { m.dispose(); } catch (e) {} return; }   // 後から押した読み込みを優先
+    const newLabels = m.getClassLabels();
+    if (!newLabels || !newLabels.length) throw new Error('クラスがありません');
+    // ここで初めて新しいモデルに切り替える
+    const old = model;
+    const same = isReload && old && stamp && stamp === modelStamp;
+    model = m; modelUrl = url; modelStamp = stamp; labels = newLabels;
+    if (old && old !== m) retired.push(old);
+    disposeRetired();
     classCmd = labels.map(commandFor);
     buildClasses();
+    resetJudge();
+    try { localStorage.setItem('dai4_model_url', url); } catch (e) {}
+    const t = stamp ? new Date(stamp).toLocaleString('ja-JP') : '不明';
+    log('モデル：' + url + '（' + labels.join('／') + '）作成：' + t);
     const unknown = labels.filter(l => !knownName(l));
-    msg('モデルを読み込みました（クラス：' + labels.join('・') + '）' +
-      (unknown.length ? '。「' + unknown.join('」「') + '」は決まったクラス名ではないので送りません（右の欄で選べます）' : ''), unknown.length ? 'ng' : 'ok');
-    refresh();
+    line('modelLine', '読み込みました：' + new Date().toLocaleTimeString('ja-JP') + '（モデルの日時：' + t + '・' + labels.length + 'クラス）', same ? 'wait' : 'ok');
+    let text = (isReload ? 'モデルを取り直しました' : 'モデルを読み込みました') + '（クラス：' + labels.join('・') + '）';
+    let bad = false;
+    if (same) { text += '。前と同じモデルです。Teachable Machine で「Update my cloud model」を押し、「up to date」の表示を確かめてから、もう一度押してください'; bad = true; }
+    if (unknown.length) { text += '。「' + unknown.join('」「') + '」は決まったクラス名ではないので送りません（例：Class 6 は「待機」に直す）'; bad = true; }
+    msg(text, bad ? 'ng' : 'ok');
   } catch (e) {
-    msg('モデルを読み込めませんでした。リンクが正しいか、インターネットにつながっているか確かめてください', 'ng');
-    log('モデル読み込み失敗：' + (e && e.message));
+    if (seq !== loadSeq) return;
+    const r = reason(e, step);
+    log('モデル読み込み失敗：' + ((e && e.message) || e));
+    if (model) {
+      paused = true;   // 前のモデルが残っているときは、勝手に動かないよう一時停止
+      line('modelLine', '新しいモデルを読み込めませんでした（前のモデルのまま・一時停止中）', 'ng');
+      msg(r + '。前のモデルのまま一時停止しています', 'ng');
+    } else {
+      line('modelLine', '読み込めませんでした', 'ng');
+      msg(r, 'ng');
+    }
   } finally {
-    $('loadModel').disabled = false; refresh();
+    if (seq === loadSeq) { loading = false; refresh(); }
   }
+}
+
+// 古いモデルのメモリを返す（判定の途中では返さない）
+function disposeRetired() {
+  if (busy) return;
+  while (retired.length) { const m = retired.pop(); try { m.dispose(); } catch (e) {} }
 }
 
 function buildClasses() {
@@ -228,21 +329,18 @@ function buildClasses() {
   labels.forEach((name, i) => {
     const row = document.createElement('div');
     row.className = 'cls'; row.id = 'cls' + i;
-    const opts = OPTIONS
-      .map(([v, t]) => '<option value="' + v + '"' + (classCmd[i] === v ? ' selected' : '') + '>' + t + '</option>').join('');
-    row.innerHTML = '<span class="name"></span><div class="bar"><span></span></div><span class="pct">0%</span><select aria-label="送る文字">' + opts + '</select>';
+    row.innerHTML = '<span class="name"></span><div class="bar"><span></span></div><span class="pct">0%</span><span class="to"></span>';
     row.querySelector('.name').textContent = name;
-    if (normName(name) === '待機') { row.querySelector('select').outerHTML = '<span style="font-size:16px;color:var(--sub)">待機（送らない）</span>'; }
-    row.querySelector('.bar span').style.background = CMD_COLOR[classCmd[i]];
-    const sel = row.querySelector('select');
-    if (sel) sel.onchange = (e) => { classCmd[i] = e.target.value; row.querySelector('.bar span').style.background = CMD_COLOR[classCmd[i]]; };
+    const c = classCmd[i];
+    row.querySelector('.to').textContent = knownName(name) ? (c ? '→ ' + c + '（' + CMD_NAME[c] + '）を送る' : '→ 送らない（待機）') : '→ 送らない（決まったクラス名ではない）';
+    row.querySelector('.bar span').style.background = CMD_COLOR[c];
     box.appendChild(row);
   });
 }
 
 // ---------- 2. カメラ ----------
 async function startCam() {
-  if (!model) return;
+  if (!model || camReady) return;
   $('startCam').disabled = true;
   try {
     if (webcam) { try { webcam.stop(); } catch (e) {} }
@@ -250,24 +348,30 @@ async function startCam() {
     await webcam.setup();
     await webcam.play();
     $('cam').innerHTML = ''; $('cam').appendChild(webcam.canvas);
-    if (!running) { running = true; requestAnimationFrame(loop); }
-    msg('カメラを使っています。手話・ポーズを出して、バーの長さを確かめてください', 'ok');
+    camReady = true;
+    line('camLine', 'カメラを使っています', 'ok');
+    if (!loopRunning) { loopRunning = true; requestAnimationFrame(loop); }   // 判定のくり返しは1つだけ
+    msg('カメラを使っています。手の合図を出して、バーの長さを確かめてください', 'ok');
   } catch (e) {
     msg('カメラを使えませんでした。カメラの使用を「許可」したか、ほかのページ（Teachable Machine など）がカメラを使っていないか確かめてください', 'ng');
+    line('camLine', '使えませんでした', 'ng');
     log('カメラ失敗：' + (e && e.message));
-    $('startCam').disabled = false;
   }
   refresh();
 }
 
-let busy = false;
 async function loop() {
-  if (!running) return;
+  if (!camReady) { loopRunning = false; return; }
   webcam.update();
-  if (!busy) {
+  if (!busy && model) {
     busy = true;
-    try { show(await model.predict(webcam.canvas)); } catch (e) { log('判定失敗：' + (e && e.message)); }
+    const m = model, seq = loadSeq;
+    try {
+      const pred = await m.predict(webcam.canvas);
+      if (m === model && seq === loadSeq && !loading) show(pred);   // 切り替え前のモデルの結果は使わない
+    } catch (e) { log('判定失敗：' + (e && e.message)); }
     busy = false;
+    disposeRetired();
   }
   requestAnimationFrame(loop);
 }
@@ -281,20 +385,20 @@ function show(pred) {
     row.querySelector('.pct').textContent = (p.probability * 100).toFixed(0) + '%';
     row.classList.toggle('top', i === top);
   });
-  const cmd = classCmd[top] || '';
+  const name = pred[top].className;
+  const cmd = commandFor(name);
   const prob = pred[top].probability;
-  $('judge').textContent = pred[top].className + '（' + prob.toFixed(2) + '）';
-  if (!aiOn) return;
-  // 誤動作を減らす：スコアが条件以上で、同じ判定が一定時間続いたら、変わったときだけ送る
-  // 待機（送らない）のときは何も送らない。待機が続いたら、次の指示は同じものでも送れるようにする
+  $('judge').textContent = name + '（' + prob.toFixed(2) + '）';
+  if (!aiActive()) { candidate = -1; return; }
+  // 同じクラスが、スコアが条件以上のまま一定時間続いたら、判定が変わったときだけ送る
   const th = parseFloat($('threshold').value), hold = parseFloat($('hold').value) * 1000;
   const now = performance.now();
-  const key = cmd || ('-' + top);
-  if (prob < th) { candidate = ''; return; }
-  if (key !== candidate) { candidate = key; candidateSince = now; return; }
+  if (prob < th) { candidate = -1; return; }                       // 条件より下がった → やり直し
+  if (top !== candidate) { candidate = top; candidateSince = now; return; }   // 別のクラス → やり直し
   if (now - candidateSince < hold) return;
-  if (!cmd) { if (normName(pred[top].className) === '待機') lastSent = ''; return; }
-  if (cmd !== lastSent) sendCmd(cmd, 'AI');
+  if (!knownName(name)) return;                                    // 決まった名前ではない → 送らない
+  if (!cmd) { lastSent = ''; return; }                             // 待機 → 送らない（次は同じ命令も送れる）
+  if (cmd !== lastSent) sendCmd(cmd, 'AI');                        // 同じ命令は続けて送らない
 }
 
 // ---------- 3. Bluetooth ----------
@@ -303,15 +407,15 @@ function onStatus(e) {
   if (!s) return;
   log('Arduino：' + s);
   const p = s.split(':');
-  if (p.length >= 4) $('reply').textContent = (CMD_NAME[p[0]] ? CMD_NAME[p[0]] + '（' + p[0] + '）を受け取った' : 'まだ指示なし') + '\nLED：' + (p[1] === '1' ? '点灯' : '消灯') + '　サーボ：' + p[2] + '°';
+  if (p.length >= 4) $('reply').textContent = (CMD_NAME[p[0]] ? p[0] + ' を受け取った' : 'まだ指示なし') + '\nLED：' + (p[1] === '1' ? '点灯' : '消灯') + '　サーボ：' + p[2] + '°';
   else $('reply').textContent = s;
 }
 
 function onDisconnected() {
   log('切断されました');
-  commandChar = null;
+  commandChar = null;                              // これで送信は止まる
   if (statusChar) { statusChar.removeEventListener('characteristicvaluechanged', onStatus); statusChar = null; }
-  msg('切断されました。もう一度つなぐときは「Bluetoothで接続」を押してください');
+  msg('切断されました。AI操作は止まっています。もう一度つなぐときは「Bluetoothで接続」を押してください');
   refresh();
 }
 
@@ -334,11 +438,14 @@ async function connect() {
     const st = await service.getCharacteristic(STATUS_UUID);
     st.addEventListener('characteristicvaluechanged', onStatus);
     await st.startNotifications();
-    commandChar = cmd; statusChar = st;
     writing = Promise.resolve();
     try { const v = await st.readValue(); onStatus({ target: { value: v } }); } catch (e) { log('状態を読めませんでした：' + e.message); }
+    statusChar = st;
+    paused = false;            // 接続できたら AI 操作を自動で始める（準備ができていれば）
+    commandChar = cmd;         // 通信の準備がすべて終わってから「つながった」にする
     log('接続：' + device.name);
-    msg('接続しました（' + device.name + '）。自分の機器名と同じか確かめてください', 'ok');
+    const ready = model && camReady;
+    msg('接続しました（' + device.name + '）。自分の機器名と同じか確かめてください。' + (ready ? 'AI操作を始めます' : (!model ? '①でモデルを読み込むと' : '②でカメラを使うと') + 'AI操作が始まります'), 'ok');
   } catch (e) {
     if (e && e.name === 'NotFoundError') msg('機器が選ばれませんでした。もう一度「Bluetoothで接続」を押してください');
     else if (e && /service/i.test(e.message || '')) msg('第4回のプログラム（dai4_ai_remote）が書き込まれていない可能性があります', 'ng');
@@ -360,6 +467,7 @@ function send(c) {
 }
 
 async function sendCmd(c, from) {
+  if (!connected()) return;
   lastSent = c;
   try {
     await send(c);
@@ -372,12 +480,16 @@ async function sendCmd(c, from) {
   }
 }
 
-$('loadModel').onclick = loadModel;
+$('loadModel').onclick = () => loadModel(false);
+$('reloadModel').onclick = () => loadModel(true);
 $('startCam').onclick = startCam;
 $('connect').onclick = connect;
 $('disconnect').onclick = () => { if (device && device.gatt.connected) device.gatt.disconnect(); };
-$('toggle').onclick = () => setAi(!aiOn);
-document.querySelectorAll('.manual button').forEach(b => b.onclick = () => { if (aiOn) setAi(false); sendCmd(b.dataset.cmd, '手'); });
+$('pause').onclick = () => { paused = !paused; msg(paused ? 'AI操作を一時停止しました' : 'AI操作を再開しました。新しく 0.5 秒続いた判定から送ります', paused ? '' : 'ok'); refresh(); };
+document.querySelectorAll('.manual button').forEach(b => b.onclick = () => {
+  if (!paused) { paused = true; refresh(); msg('手で試すため、AI操作を一時停止しました。戻すときは「再開」を押してください'); }
+  sendCmd(b.dataset.cmd, '手');
+});
 
 // 開いた環境の確認
 (function checkEnv() {
